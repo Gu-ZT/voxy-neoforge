@@ -17,16 +17,15 @@ base {
 sourceSets {
     main {
         java {
-            // Iris shader integration
-            exclude 'me/cortex/voxy/client/iris/**'
-            exclude 'me/cortex/voxy/client/core/IrisVoxyRenderPipeline.java'
-            exclude 'me/cortex/voxy/client/core/util/IrisUtil.java'
-            exclude 'me/cortex/voxy/client/mixin/iris/**'
+            // Iris shader integration (enabled for NeoForge + Embeddium)
 
-            // Sodium config API (changed in Sodium 0.6.x)
+            // Sodium integrations removed for Embeddium-only branch
             exclude 'me/cortex/voxy/client/config/SodiumConfigBuilder.java'
             exclude 'me/cortex/voxy/client/config/VoxyConfigMenu.java'
             exclude 'me/cortex/voxy/client/config/IConfigPageSetter.java'
+            exclude 'me/cortex/voxy/client/config/VoxySodiumOptions.java'
+            exclude 'me/cortex/voxy/client/compat/SodiumCompat.java'
+            exclude 'me/cortex/voxy/client/mixin/sodium/**'
 
             // ModMenu integration (Fabric-only)
             exclude 'me/cortex/voxy/client/config/ModMenuIntegration.java'
@@ -44,8 +43,7 @@ sourceSets {
             exclude 'me/cortex/voxy/client/VoxyDebugScreenEntry.java'
             exclude 'me/cortex/voxy/client/mixin/minecraft/MixinDebugScreenEntryList.java'
 
-            // Sodium config integration mixin
-            exclude 'me/cortex/voxy/client/mixin/sodium/MixinVideoSettingsScreen.java'
+            // Sodium config integration mixin removed
 
             // Blaze3D OpenGL debug mixin (GlDebug class not accessible in MC 1.21.1)
             exclude 'me/cortex/voxy/client/mixin/minecraft/MixinGlDebug.java'
@@ -81,12 +79,6 @@ repositories {
         filter {
             includeGroup "net.caffeinemc"
         }
-    }
-
-    // Forgified Fabric API for NeoForge
-    maven {
-        name = "Sinytra"
-        url = "https://maven.su5ed.dev/releases"
     }
 
     maven { url = "https://maven.shedaniel.me/" }
@@ -177,21 +169,12 @@ dependencies {
     // To change the versions see the gradle.properties file
     implementation "net.neoforged:neoforge:${project.neoforge_version}"
 
-    // Forgified Fabric API for compatibility (includes Fabric Loader API)
-    implementation "org.sinytra.forgified-fabric-api:forgified-fabric-api:${project.forgified_fabric_version}"
-
-    // Sodium for NeoForge (0.6.13 - latest for MC 1.21.1)
-    implementation "maven.modrinth:sodium:mc1.21.1-0.6.13-neoforge"
+    // Embeddium for NeoForge (compile-only; runtime provided by user/modpack)
+    compileOnly "maven.modrinth:embeddium:${project.embeddium_version}"
+    compileOnly files("${rootProject.projectDir}/.reference/iris/iris-neoforge.jar")
 
     // Lithium for NeoForge (0.15.1 - latest for MC 1.21.1)
     implementation("maven.modrinth:lithium:mc1.21.1-0.15.1-neoforge")
-
-    // SodiumOptionsAPI for Video Settings integration
-    // Provides event API to add custom pages to Sodium's options GUI
-    compileOnly("maven.modrinth:sodium-options-api:neoforge-1.21.1-1.0.10")
-
-    // Reese's Sodium Options - required by SodiumOptionsAPI
-    compileOnly("maven.modrinth:reeses-sodium-options:mc1.21.3-1.8.0+neoforge")
 
     // Optional mod dependencies - commented out for initial port
     // TODO: Add NeoForge versions when available
@@ -475,19 +458,4 @@ dependencies {
     }
     //implementation 'org.rocksdb:rocksdbjni:8.10.0'
     //implementation 'redis.clients:jedis:5.1.0'
-}
-
-if (!isInGHA) {
-    repositories {
-        maven {
-            url = "https://pkgs.dev.azure.com/djtheredstoner/DevAuth/_packaging/public/maven/v1"
-        }
-    }
-
-    dependencies {
-        /*
-        modRuntimeOnly('me.djtheredstoner:DevAuth-fabric:1.2.1') {
-            exclude group: 'net.fabricmc', module: 'fabric-loader'
-        }*/
-    }
 }

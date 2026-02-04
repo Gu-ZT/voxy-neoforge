@@ -143,7 +143,7 @@ class MixinConfigValidator:
                 # Check if targeting non-Minecraft class
                 has_remap_false = 'remap' in content and 'false' in mixin_annotation
                 
-                # RenderSystem, Sodium, Nvidium classes should have remap=false
+                # RenderSystem, Embeddium, Nvidium classes should have remap=false
                 if 'RenderSystem.class' in mixin_annotation:
                     if not has_remap_false:
                         remap_issues.append((file, 'RenderSystem', 'missing remap=false'))
@@ -226,7 +226,7 @@ class MixinConfigValidator:
         """Check if mixin is in an intentionally excluded integration"""
         excluded_prefixes = ['iris.', 'flashback.', 'nvidium.', 'chunky.']
         excluded_specific = ['minecraft.MixinDebugScreenEntryList', 'minecraft.MixinFogRenderer', 
-                            'minecraft.MixinGlDebug', 'sodium.MixinVideoSettingsScreen',
+                            'minecraft.MixinGlDebug',
                             'minecraft.MixinBlockableEventLoop']
         
         return any(mixin.startswith(p) for p in excluded_prefixes) or mixin in excluded_specific

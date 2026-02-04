@@ -12,6 +12,10 @@
 layout(binding = 0) uniform sampler2D blockModelAtlas;
 layout(binding = 2) uniform sampler2D depthTex;
 
+// The vertex shader binds Minecraft's LightTexture at texture unit 1 via LightMapHelper.bind(1).
+// Expose it to the fragment shader as well so Iris fallback patches can do correct light sampling.
+#define LIGHTING_SAMPLER_BINDING 1
+
 //#define DEBUG_RENDER
 
 //TODO: need to fix when merged quads have discardAlpha set to false but they span multiple tiles
@@ -246,4 +250,3 @@ colour = textureGrad(blockModelAtlas, texPos, dx, dy);
 //#else
 //colour = texture(blockModelAtlas, texPos);
 //#endif
-

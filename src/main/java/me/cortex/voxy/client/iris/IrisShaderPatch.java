@@ -7,8 +7,11 @@ import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.objects.Object2ObjectLinkedOpenHashMap;
 import me.cortex.voxy.common.Logger;
+import net.irisshaders.iris.shaderpack.loading.ProgramId;
 import net.irisshaders.iris.shaderpack.ShaderPack;
 import net.irisshaders.iris.shaderpack.include.AbsolutePackPath;
+import net.irisshaders.iris.shaderpack.programs.ProgramSet;
+import net.irisshaders.iris.shaderpack.properties.ProgramDirectives;
 import org.lwjgl.opengl.ARBDrawBuffersBlend;
 
 import java.lang.reflect.Modifier;
@@ -302,10 +305,121 @@ public class IrisShaderPatch {
         };
     }
 
-    private static final Gson GSON = new GsonBuilder()
-            .excludeFieldsWithModifiers(Modifier.PRIVATE)
-            .setStrictness(Strictness.LENIENT)
-            .create();
+    private static final Gson GSON = createLenientGson();
+
+    private static Gson createLenientGson() {
+        GsonBuilder builder = new GsonBuilder()
+                .excludeFieldsWithModifiers(Modifier.PRIVATE);
+
+        try {
+            // Gson 2.11+ strictness API
+            Class<?> strictness = Class.forName("com.google.gson.Strictness");
+            Object lenient = strictness.getField("LENIENT").get(null);
+            builder.getClass().getMethod("setStrictness", strictness).invoke(builder, lenient);
+        } catch (Throwable ignored) {
+            // Fall back to legacy lenient mode if available
+            try {
+                builder.getClass().getMethod("setLenient").invoke(builder);
+            } catch (Throwable ignoredAgain) {
+                // No lenient mode available; proceed with defaults
+            }
+        }
+
+        return builder.create();
+    }
+
+    public static IrisShaderPatch makeFallbackPatch(ShaderPack pack, ProgramSet programSet) {
+        int[] opaqueBuffers = resolveDrawBuffers(programSet, ProgramId.TerrainSolid, ProgramId.Terrain, ProgramId.Basic);
+        int[] translucentBuffers = resolveDrawBuffers(programSet, ProgramId.Water, ProgramId.BlockTrans, ProgramId.Terrain);
+
+        PatchGson patchData = new PatchGson();
+        patchData.version = VERSION;
+        patchData.opaqueDrawBuffers = opaqueBuffers;
+        patchData.translucentDrawBuffers = translucentBuffers;
+        patchData.uniforms = new String[0];
+        patchData.samplers = new Object2ObjectLinkedOpenHashMap<>();
+        patchData.opaquePatchData = buildFallbackPatch(opaqueBuffers.length);
+        patchData.translucentPatchData = buildFallbackPatch(translucentBuffers.length);
+        patchData.excludeLodsFromVanillaDepth = false;
+        patchData.useViewportDims = true;
+
+        return new IrisShaderPatch(patchData, pack);
+    }
+
+    private static int[] resolveDrawBuffers(ProgramSet programSet, ProgramId... ids) {
+        for (ProgramId id : ids) {
+            var source = programSet.get(id);
+            if (source.isEmpty()) {
+                continue;
+            }
+            ProgramDirectives directives = source.get().getDirectives();
+            int[] buffers = directives.getDrawBuffers();
+            if (buffers != null && buffers.length > 0) {
+                return buffers;
+            }
+        }
+        return new int[]{0};
+    }
+
+    private static String buildFallbackPatch(int outputCount) {
+        int outputs = Math.max(1, outputCount);
+        StringBuilder builder = new StringBuilder();
+
+        for (int i = 0; i < outputs; i++) {
+            builder.append("layout(location = ").append(i).append(") out vec4 outColour").append(i).append(";\n");
+        }
+
+        builder.append("\nvoid voxy_emitFragment(VoxyFragmentParameters parameters) {\n")
+                .append("    vec4 colour = parameters.sampledColour;\n")
+                // Block/biome tinting (same heuristic as the non-patched path)
+                .append("    uint tintingFunction = tintingState();\n")
+                .append("    bool doTint = tintingFunction==2u;\n")
+                .append("    if (tintingFunction==1u) {\n")
+                .append("        vec4 tintTest = textureLod(blockModelAtlas, parameters.uv, 0);\n")
+                .append("        if (abs(tintTest.r-tintTest.g) < 0.02f && abs(tintTest.g-tintTest.b) < 0.02f) {\n")
+                .append("            doTint = true;\n")
+                .append("        }\n")
+                .append("    }\n")
+                .append("    if (doTint) {\n")
+                .append("        colour *= parameters.tinting;\n")
+                .append("    }\n\n")
+                // Apply Minecraft lightmap + vanilla directional face shading.
+                // This prevents the "flat/unlit" look under shader packs when no voxy.json is present.
+                .append("    vec4 light = texture(lightSampler, parameters.lightMap);\n")
+                .append("    BlockModel model = modelData[parameters.modelId];\n")
+                .append("    bool isShaded = modelIsShaded(model);\n")
+                .append("    float faceTint;\n")
+                .append("    if (!isShaded) {\n")
+                .append("        faceTint = NO_SHADE_FACE_TINT;\n")
+                .append("    } else if ((parameters.face>>1u) == 1u) {\n")
+                .append("        faceTint = Z_AXIS_FACE_TINT;\n")
+                .append("    } else if ((parameters.face>>1u) == 2u) {\n")
+                .append("        faceTint = X_AXIS_FACE_TINT;\n")
+                .append("    } else if (parameters.face == 1u) {\n")
+                .append("        faceTint = UP_FACE_TINT;\n")
+                .append("    } else {\n")
+                .append("        faceTint = DOWN_FACE_TINT;\n")
+                .append("    }\n")
+                .append("    colour.rgb *= light.rgb * faceTint;\n")
+                .append("    colour = colour + vec4(0,0,0,float(interData.w&0xFFu)/255);\n\n");
+
+        // Output routing:
+        // - outColour0: shaded color (keeps block light working even in fallback mode)
+        // - outColour1: encoded normal (common shader-pack convention; avoids writing garbage into normal buffers)
+        // - other outputs: neutral
+        builder.append("    outColour0 = colour;\n");
+        if (outputs > 1) {
+            builder.append("    vec3 n = vec3(uint((parameters.face>>1u)==2u), uint((parameters.face>>1u)==0u), uint((parameters.face>>1u)==1u)) * (float(int(parameters.face)&1)*2-1);\n");
+            builder.append("    outColour1 = vec4(n*0.5+0.5, 1.0);\n");
+        }
+        for (int i = 2; i < outputs; i++) {
+            builder.append("    outColour").append(i).append(" = vec4(0.0);\n");
+        }
+
+        builder.append("}\n");
+
+        return builder.toString();
+    }
 
     public static IrisShaderPatch makePatch(ShaderPack ipack, AbsolutePackPath directory, Function<AbsolutePackPath, String> sourceProvider) {
         String voxyPatchData = sourceProvider.apply(directory.resolve("voxy.json"));

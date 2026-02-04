@@ -4,6 +4,7 @@ import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.util.IrisUtil;
 import me.cortex.voxy.client.iris.IGetVoxyPatchData;
 import me.cortex.voxy.client.iris.IrisShaderPatch;
+import me.cortex.voxy.common.Logger;
 import net.irisshaders.iris.shaderpack.ShaderPack;
 import net.irisshaders.iris.shaderpack.include.AbsolutePackPath;
 import net.irisshaders.iris.shaderpack.programs.ProgramSet;
@@ -28,6 +29,10 @@ public class MixinProgramSet implements IGetVoxyPatchData {
     private void voxy$injectPatchMaker(AbsolutePackPath directory, Function<AbsolutePackPath, String> sourceProvider, ShaderProperties shaderProperties, ShaderPack pack, CallbackInfo ci) {
         if (VoxyConfig.CONFIG.isRenderingEnabled() && IrisUtil.SHADER_SUPPORT) {
             this.patchData = IrisShaderPatch.makePatch(pack, directory, sourceProvider);
+            if (this.patchData == null && VoxyConfig.CONFIG.enableShaderPackFallbackPatch) {
+                this.patchData = IrisShaderPatch.makeFallbackPatch(pack, (ProgramSet)(Object)this);
+                Logger.warn("Shader pack has no voxy.json; using fallback patch");
+            }
         }
         /*
         if (this.patchData != null) {

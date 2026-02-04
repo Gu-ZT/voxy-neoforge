@@ -2,10 +2,9 @@ package me.cortex.voxy.client.mixin.minecraft;
 
 import me.cortex.voxy.client.VoxyClientInstance;
 import me.cortex.voxy.client.config.VoxyConfig;
+import me.cortex.voxy.client.compat.IrisCompatManager;
 import me.cortex.voxy.client.core.IGetVoxyRenderSystem;
 import me.cortex.voxy.client.core.VoxyRenderSystem;
-// MC 1.21.1 NeoForge: Iris shader integration excluded
-// import me.cortex.voxy.client.core.util.IrisUtil;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.world.WorldEngine;
 import me.cortex.voxy.commonImpl.VoxyCommon;
@@ -30,7 +29,7 @@ public abstract class MixinLevelRenderer implements IGetVoxyRenderSystem {
         return this.renderer;
     }
 
-    @Inject(method = "allChanged()V", at = @At("RETURN"), order = 900)//We want to inject before sodium
+    @Inject(method = "allChanged()V", at = @At("RETURN"), order = 900)//We want to inject before embeddium
     private void reloadVoxyRenderer(CallbackInfo ci) {
         this.shutdownRenderer();
         if (this.level != null) {
@@ -86,9 +85,8 @@ public abstract class MixinLevelRenderer implements IGetVoxyRenderSystem {
         try {
             this.renderer = new VoxyRenderSystem(world, instance.getServiceManager());
         } catch (RuntimeException e) {
-            // MC 1.21.1 NeoForge: Iris shader integration excluded - irisShaderPackEnabled() returns false
-            if (false) {
-                // IrisUtil.disableIrisShaders();
+            if (IrisCompatManager.isShaderPackEnabled()) {
+                IrisCompatManager.disableShaders();
             } else {
                 throw e;
             }

@@ -31,7 +31,7 @@ You might wonder: "Why not just use the Fabric version with [Sinytra Connector](
 | **Mod Integration** | Native NeoForge API calls | Fabric API emulation via FFAPI |
 | **Maintenance** | Must track upstream Voxy changes | Just drop in Fabric jar |
 | **Stability** | Tested against NeoForge directly | May have edge cases from translation |
-| **Dependencies** | Forgified Fabric API | Connector + Forgified Fabric API |
+| **Dependencies** | Embeddium | Connector + Forgified Fabric API |
 
 **Bottom line:** For a performance-critical LOD mod like Voxy, eliminating the translation layer overhead is worthwhile. If you prioritize simplicity and don't mind potential overhead, Sinytra Connector is a valid alternative.
 
@@ -47,7 +47,7 @@ You might wonder: "Why not just use the Fabric version with [Sinytra Connector](
 - Delayed chunk unloading to prevent pop-out effects
 
 ### Current Limitations
-- Requires Sodium 0.6.13+ (NeoForge version)
+- Requires Embeddium 1.0.x (NeoForge version)
 - Some optional integrations not yet ported (Iris, Nvidium, Vivecraft)
 - Debug screen integration disabled (MC 1.21.1 API changes)
 
@@ -58,15 +58,14 @@ You might wonder: "Why not just use the Fabric version with [Sinytra Connector](
 | Dependency | Version | Link |
 |------------|---------|------|
 | Minecraft | 1.21.1 | - |
-| NeoForge | 21.1.x | [NeoForge](https://neoforged.net/) |
-| Sodium | mc1.21.1-0.6.13-neoforge | [Modrinth](https://modrinth.com/mod/sodium/version/mc1.21.1-0.6.13-neoforge) |
-| Forgified Fabric API | 0.116.7+2.2.0+1.21.1 | [Modrinth](https://modrinth.com/mod/forgified-fabric-api/version/0.116.7+2.2.0+1.21.1) |
+| NeoForge | 21.1.115+ | [NeoForge](https://neoforged.net/) |
+| Embeddium | 1.0.x (mc1.21.1) | [Modrinth](https://modrinth.com/mod/embeddium) |
 
 ### Recommended Dependencies
 
 | Dependency | Purpose | Link |
 |------------|---------|------|
-| Reese's Sodium Options | Better settings UI for Sodium + Voxy config access | [Modrinth](https://modrinth.com/mod/reeses-sodium-options) |
+| Reese's Sodium Options | Better settings UI for Embeddium (if available) | [Modrinth](https://modrinth.com/mod/reeses-sodium-options) |
 | Lithium | General performance improvements | [Modrinth](https://modrinth.com/mod/lithium) |
 
 ## Installation

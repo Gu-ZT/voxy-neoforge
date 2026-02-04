@@ -23,7 +23,7 @@ bool shouldRender(ivec3 icorner) {
     // which is hidden by depth testing. The overlap prevents gaps/pop-in.
     //
     // boundaryBuffer controls the INWARD shrink:
-    //   0 = exact match with Sodium (may have gaps at boundaries)
+    //   0 = exact match with Embeddium (may have gaps at boundaries)
     //   1-4 = shrink detection, LODs overlap with vanilla edge (smoother transition)
     //
     // Higher values = MORE LOD overlap = smoother transitions but more overdraw

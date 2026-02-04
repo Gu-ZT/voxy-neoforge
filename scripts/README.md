@@ -135,8 +135,8 @@ find .reference/minecraft/1.21.1/decompiled -name "TargetClass.java"
 # 2. Verify method exists
 grep -A 10 "targetMethod" .reference/minecraft/1.21.1/decompiled/path/to/TargetClass.java
 
-# 3. Check Sodium's implementation
-grep -r "@Mixin.*TargetClass" .reference/sodium/
+# 3. Check Embeddium's implementation
+grep -r "@Mixin.*TargetClass" .reference/embeddium/
 ```
 
 ### After Modifying Mixin Configs

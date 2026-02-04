@@ -15,6 +15,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 public class VoxyConfig {
+    private static final int CURRENT_CONFIG_VERSION = 2;
+
     private static final Gson GSON = new GsonBuilder()
             .setFieldNamingPolicy(FieldNamingPolicy.LOWER_CASE_WITH_UNDERSCORES)
             .setPrettyPrinting()
@@ -23,6 +25,14 @@ public class VoxyConfig {
 
     public static VoxyConfig CONFIG = loadOrCreate();
 
+    /**
+     * Used for config migrations.
+     *
+     * Gson may instantiate objects without running field initializers, so missing fields in older configs can
+     * appear as Java default values (0/false). Migrations must explicitly set defaults when upgrading.
+     */
+    public int configVersion = CURRENT_CONFIG_VERSION;
+
     public boolean enabled = true;
     public boolean enableRendering = true;
     public boolean ingestEnabled = true;
@@ -30,6 +40,10 @@ public class VoxyConfig {
     public int serviceThreads = (int) Math.max(CpuLayout.getCoreCount()/1.5, 1);
     public float subDivisionSize = 64;
     public boolean useEnvironmentalFog = true;
+    public boolean enableShaderPackFogOverride = true;
+    public boolean enableShaderPackFallbackPatch = true;
+    public boolean dontUseEmbeddiumBuilderThreads = false;
+    @Deprecated
     public boolean dontUseSodiumBuilderThreads = false;
 
     // LOD boundary buffer: controls the safety margin between vanilla chunks and LOD rendering
@@ -52,7 +66,33 @@ public class VoxyConfig {
                 try (FileReader reader = new FileReader(path.toFile())) {
                     var conf = GSON.fromJson(reader, VoxyConfig.class);
                     if (conf != null) {
-                        conf.save();
+                        boolean changed = false;
+
+                        if (conf.configVersion < 1) {
+                            // Reserved for initial migration hooks.
+                            changed = true;
+                        }
+                        if (conf.configVersion < 2) {
+                            // Shader pack support defaults to enabled.
+                            conf.enableShaderPackFogOverride = true;
+                            conf.enableShaderPackFallbackPatch = true;
+                            changed = true;
+                        }
+
+                        // Legacy field migration (Sodium -> Embeddium naming)
+                        if (conf.dontUseSodiumBuilderThreads && !conf.dontUseEmbeddiumBuilderThreads) {
+                            conf.dontUseEmbeddiumBuilderThreads = true;
+                            changed = true;
+                        }
+
+                        if (conf.configVersion != CURRENT_CONFIG_VERSION) {
+                            conf.configVersion = CURRENT_CONFIG_VERSION;
+                            changed = true;
+                        }
+
+                        if (changed) {
+                            conf.save();
+                        }
                         return conf;
                     } else {
                         Logger.error("Failed to load voxy config, resetting");

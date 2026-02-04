@@ -27,21 +27,37 @@ public class MixinIrisRenderingPipeline implements IGetVoxyPatchData, IGetIrisVo
     @Unique
     IrisVoxyRenderPipelineData pipeline;
 
-    @Inject(method = "<init>", at = @At(value = "INVOKE", target = "Lnet/irisshaders/iris/pipeline/transform/ShaderPrinter;resetPrintState()V", shift = At.Shift.AFTER))
-    private void voxy$injectPatchDataStore(ProgramSet programSet, CallbackInfo ci) {
-        if (IrisUtil.SHADER_SUPPORT) {
-            this.patchData = ((IGetVoxyPatchData) programSet).voxy$getPatchData();
-        }
-    }
-
-    @Inject(method = "<init>", at = @At(value = "INVOKE", target = "Lnet/irisshaders/iris/pipeline/IrisRenderingPipeline;createSetupComputes([Lnet/irisshaders/iris/shaderpack/programs/ComputeSource;Lnet/irisshaders/iris/shaderpack/programs/ProgramSet;Lnet/irisshaders/iris/shaderpack/texture/TextureStage;)[Lnet/irisshaders/iris/gl/program/ComputeProgram;"))
+    // Keep constructor injections resilient: Iris changes internal call structure frequently.
+    // NOTE: Mixins cannot inject non-static callbacks at the constructor HEAD (before super()).
+    @Inject(method = "<init>", at = @At("TAIL"), require = 0)
     private void voxy$injectPipeline(ProgramSet programSet, CallbackInfo ci) {
-        if (this.patchData != null) {
-            this.pipeline = IrisVoxyRenderPipelineData.buildPipeline((IrisRenderingPipeline)(Object)this, this.patchData, this.customUniforms, this.shaderStorageBufferHolder);
+        if (!IrisUtil.SHADER_SUPPORT) {
+            return;
         }
+
+        this.patchData = ((IGetVoxyPatchData) programSet).voxy$getPatchData();
+
+        if (this.patchData == null) {
+            return;
+        }
+        if (this.customUniforms == null) {
+            return;
+        }
+        if (this.shaderStorageBufferHolder == null) {
+            return;
+        }
+
+        this.pipeline = IrisVoxyRenderPipelineData.buildPipeline(
+                (IrisRenderingPipeline) (Object) this,
+                this.patchData,
+                this.customUniforms,
+                this.shaderStorageBufferHolder);
     }
 
-    @Inject(method = "beginLevelRendering", at = @At(value = "INVOKE", target = "Lcom/mojang/blaze3d/opengl/GlStateManager;_activeTexture(I)V", shift = At.Shift.BEFORE), remap = false)
+    // Iris frequently changes the internal implementation details of beginLevelRendering().
+    // We only need to apply the captured viewport matrices (from Embeddium) before Voxy renders,
+    // so inject at HEAD to avoid brittle bytecode targets.
+    @Inject(method = "beginLevelRendering", at = @At("HEAD"), remap = false, require = 0)
     private void voxy$injectViewportSetup(CallbackInfo ci) {
         if (IrisUtil.CAPTURED_VIEWPORT_PARAMETERS != null) {
             var renderer = ((IGetVoxyRenderSystem) Minecraft.getInstance().levelRenderer).getVoxyRenderSystem();

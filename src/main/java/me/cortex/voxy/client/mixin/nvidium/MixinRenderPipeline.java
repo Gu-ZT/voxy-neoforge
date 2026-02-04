@@ -13,12 +13,12 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(value = RenderPipeline.class, remap = false)
 public class MixinRenderPipeline {
-    // Sodium 0.6.x: FogParameters removed
+    // Embeddium: FogParameters integration not wired
     @Inject(method = "renderFrame", at = @At("RETURN"))
     private void voxy$injectRender(TerrainRenderPass pass, Viewport frustum, ChunkRenderMatrices crm, double px, double py, double pz, CallbackInfo ci) {
         var renderer = ((IGetVoxyRenderSystem) Minecraft.getInstance().levelRenderer).getVoxyRenderSystem();
         if (renderer != null) {
-            renderer.renderOpaque(renderer.setupViewport(crm, px, py, pz));
+            renderer.renderOpaque(renderer.setupViewport(crm.projection(), crm.modelView(), px, py, pz));
         }
     }
 }

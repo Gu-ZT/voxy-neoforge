@@ -9,12 +9,14 @@ version="${version}"
 displayName="Voxy"
 description="Far distance rendering mod utilising LoDs"
 authors="Cortex"
-logoFile="assets/voxy/icon.png"
+# Embeddium reads mod logos via PackResources.getRootResource(logoFile) and passes logoFile as a *single* segment.
+# Therefore this must be a root-level file name without slashes.
+logoFile="voxy_logo.png"
 
 [[dependencies.voxy]]
 modId="neoforge"
 type="required"
-versionRange="[21.1,)"
+versionRange="[21.1.115,)"
 ordering="NONE"
 side="BOTH"
 
@@ -26,18 +28,11 @@ ordering="NONE"
 side="BOTH"
 
 [[dependencies.voxy]]
-modId="sodium"
-type="required"
-versionRange="[0.6.13,)"
+modId="embeddium"
+type="optional"
+versionRange="[1.0.0,)"
 ordering="AFTER"
 side="CLIENT"
-
-[[dependencies.voxy]]
-modId="fabric_api"
-type="required"
-versionRange="[0.102.0,)"
-ordering="BEFORE"
-side="BOTH"
 
 [[mixins]]
 config="client.voxy.mixins.json"

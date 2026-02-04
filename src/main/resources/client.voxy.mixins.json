@@ -1,6 +1,7 @@
 {
   "required": true,
   "package": "me.cortex.voxy.client.mixin",
+  "plugin": "me.cortex.voxy.mixin.VoxyMixinPlugin",
   "compatibilityLevel": "JAVA_17",
   "client": [
     "minecraft.AccessorLightTexture",
@@ -15,12 +16,23 @@
     "minecraft.MixinMinecraft",
     "minecraft.MixinRenderSystem",
     "minecraft.MixinWindow",
-    "sodium.AccessorChunkTracker",
-    "sodium.AccessorSodiumWorldRenderer",
-    "sodium.MixinChunkJobQueue",
-    "sodium.MixinDefaultChunkRenderer",
-    "sodium.MixinRenderSectionManager",
-    "sodium.MixinSodiumWorldRenderer"
+    "embeddium.AccessorChunkTracker",
+    "embeddium.AccessorEmbeddiumWorldRenderer",
+    "embeddium.MixinChunkJobQueue",
+    "embeddium.MixinDefaultChunkRenderer",
+    "embeddium.MixinRenderSectionManager",
+    "embeddium.MixinEmbeddiumWorldRenderer",
+    "iris.CustomUniformsAccessor",
+    "iris.IrisRenderingPipelineAccessor",
+    "iris.MixinIris",
+    "iris.MixinIrisRenderingPipeline",
+    "iris.MixinIrisSamplers",
+    "iris.MixinLevelRenderer",
+    "iris.MixinMatrixUniforms",
+    "iris.MixinPackRenderTargetDirectives",
+    "iris.MixinProgramSet",
+    "iris.MixinShaderPackSourceNames",
+    "iris.MixinStandardMacros"
   ],
   "injectors": {
     "defaultRequire": 1

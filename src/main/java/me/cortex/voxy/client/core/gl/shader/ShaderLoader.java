@@ -1,12 +1,10 @@
 package me.cortex.voxy.client.core.gl.shader;
 
-
-import net.caffeinemc.mods.sodium.client.gl.shader.ShaderConstants;
-import net.caffeinemc.mods.sodium.client.gl.shader.ShaderParser;
 import org.apache.commons.io.IOUtils;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -14,17 +12,18 @@ import java.util.regex.Pattern;
 /**
  * NeoForge-compatible shader loader for Voxy.
  *
- * On Fabric, Sodium's ShaderLoader.getShaderSource() uses a flat classloader that can
+ * On Fabric, Embeddium's ShaderLoader.getShaderSource() uses a flat classloader that can
  * access all mod resources. On NeoForge, each mod has an isolated classloader, so
- * Sodium's classloader cannot access Voxy's shader resources.
+ * Embeddium's classloader cannot access Voxy's shader resources.
  *
- * This loader bypasses Sodium's resource loading and uses Voxy's own classloader.
+ * This loader bypasses Embeddium's resource loading and uses Voxy's own classloader.
  *
  * Upstream reference: https://github.com/MCRcortex/voxy
  * See: src/main/java/me/cortex/voxy/client/core/gl/shader/ShaderLoader.java
  */
 public class ShaderLoader {
     private static final Pattern IMPORT_PATTERN = Pattern.compile("#import <(?<namespace>.*):(?<path>.*)>");
+    private static ShaderCompat shaderCompat;
 
     /**
      * Parse and load a shader, matching upstream Voxy behavior.
@@ -48,8 +47,16 @@ public class ShaderLoader {
         // The leading \n is critical for the regex to work
         String processed = "\n" + shaderSource + "\n//beans";
 
-        // Apply Sodium's shader constants processing (handles #define etc.)
-        processed = ShaderParser.parseShader(processed, ShaderConstants.builder().build());
+        // Apply shader constants processing (handles #define etc.) via Embeddium if present
+        ShaderCompat compat = shaderCompat;
+        if (compat == null) {
+            compat = ShaderCompat.create();
+            shaderCompat = compat;
+        }
+        if (compat == null) {
+            throw new RuntimeException("No shader parser available (Embeddium is required)");
+        }
+        processed = compat.parse(processed);
 
         // Normalize line endings and strip original #version (upstream behavior)
         processed = processed.replaceAll("\r\n", "\n");
@@ -103,5 +110,49 @@ public class ShaderLoader {
             result.append("\n");
         }
         return result.toString();
+    }
+
+    private static final class ShaderCompat {
+        private final Method parseMethod;
+        private final Object constants;
+
+        private ShaderCompat(Method parseMethod, Object constants) {
+            this.parseMethod = parseMethod;
+            this.constants = constants;
+        }
+
+        static ShaderCompat create() {
+            ShaderCompat compat = tryCreate(
+                    "org.embeddedt.embeddium.impl.gl.shader.ShaderParser",
+                    "org.embeddedt.embeddium.impl.gl.shader.ShaderConstants"
+            );
+            if (compat != null) {
+                return compat;
+            }
+            return null;
+        }
+
+        private static ShaderCompat tryCreate(String parserClassName, String constantsClassName) {
+            try {
+                Class<?> parserClass = Class.forName(parserClassName);
+                Class<?> constantsClass = Class.forName(constantsClassName);
+
+                Object builder = constantsClass.getMethod("builder").invoke(null);
+                Object builtConstants = builder.getClass().getMethod("build").invoke(builder);
+                Method parseMethod = parserClass.getMethod("parseShader", String.class, constantsClass);
+
+                return new ShaderCompat(parseMethod, builtConstants);
+            } catch (Throwable t) {
+                return null;
+            }
+        }
+
+        String parse(String source) {
+            try {
+                return (String) this.parseMethod.invoke(null, source, this.constants);
+            } catch (Throwable t) {
+                throw new RuntimeException("Failed to parse shader source", t);
+            }
+        }
     }
 }

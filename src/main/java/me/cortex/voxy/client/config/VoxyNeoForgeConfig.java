@@ -54,10 +54,20 @@ public class VoxyNeoForgeConfig {
             .comment("Apply environmental fog to LOD terrain")
             .define("useEnvironmentalFog", true);
 
+    private static final ModConfigSpec.BooleanValue SHADER_PACK_FOG_OVERRIDE = BUILDER
+            .comment("Extend fog distance when shader packs are active",
+                     "Prevents distant LODs from being fully fogged out by shader packs")
+            .define("shaderPackFogOverride", true);
+
+    private static final ModConfigSpec.BooleanValue SHADER_PACK_FALLBACK_PATCH = BUILDER
+            .comment("Enable fallback shader patching for packs without voxy.json",
+                     "Keeps LODs visible in shader packs that lack native Voxy integration")
+            .define("shaderPackFallbackPatch", true);
+
     // Advanced settings
-    private static final ModConfigSpec.BooleanValue DONT_USE_SODIUM_BUILDER_THREADS = BUILDER
-            .comment("Don't share threads with Sodium's chunk builder")
-            .define("dontUseSodiumBuilderThreads", false);
+    private static final ModConfigSpec.BooleanValue DONT_USE_EMBEDDIUM_BUILDER_THREADS = BUILDER
+            .comment("Don't share threads with Embeddium's chunk builder")
+            .define("dontUseEmbeddiumBuilderThreads", false);
 
     // LOD boundary buffer (overdraw/overlap)
     private static final ModConfigSpec.IntValue LOD_BOUNDARY_BUFFER = BUILDER
@@ -104,7 +114,9 @@ public class VoxyNeoForgeConfig {
         VoxyConfig.CONFIG.serviceThreads = SERVICE_THREADS.get();
         VoxyConfig.CONFIG.subDivisionSize = SUB_DIVISION_SIZE.get().floatValue();
         VoxyConfig.CONFIG.useEnvironmentalFog = USE_ENVIRONMENTAL_FOG.get();
-        VoxyConfig.CONFIG.dontUseSodiumBuilderThreads = DONT_USE_SODIUM_BUILDER_THREADS.get();
+        VoxyConfig.CONFIG.enableShaderPackFogOverride = SHADER_PACK_FOG_OVERRIDE.get();
+        VoxyConfig.CONFIG.enableShaderPackFallbackPatch = SHADER_PACK_FALLBACK_PATCH.get();
+        VoxyConfig.CONFIG.dontUseEmbeddiumBuilderThreads = DONT_USE_EMBEDDIUM_BUILDER_THREADS.get();
         VoxyConfig.CONFIG.lodBoundaryBuffer = LOD_BOUNDARY_BUFFER.get();
         VoxyConfig.CONFIG.earthCurveRatio = EARTH_CURVE_RATIO.get();
 
@@ -158,9 +170,18 @@ public class VoxyNeoForgeConfig {
         return USE_ENVIRONMENTAL_FOG.get();
     }
 
-    public static boolean dontUseSodiumBuilderThreads() {
-        return DONT_USE_SODIUM_BUILDER_THREADS.get();
+    public static boolean enableShaderPackFogOverride() {
+        return SHADER_PACK_FOG_OVERRIDE.get();
     }
+
+    public static boolean enableShaderPackFallbackPatch() {
+        return SHADER_PACK_FALLBACK_PATCH.get();
+    }
+
+    public static boolean dontUseEmbeddiumBuilderThreads() {
+        return DONT_USE_EMBEDDIUM_BUILDER_THREADS.get();
+    }
+
 
     public static int getLodBoundaryBuffer() {
         return LOD_BOUNDARY_BUFFER.get();

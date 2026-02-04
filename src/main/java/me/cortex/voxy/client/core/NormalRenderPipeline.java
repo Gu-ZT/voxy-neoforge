@@ -104,10 +104,10 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
     @Override
     protected void finish(Viewport<?> viewport, int sourceFrameBuffer, int srcWidth, int srcHeight) {
         this.finalBlit.bind();
-        // MC 1.21.1 / Sodium 0.6.x: Environmental fog disabled
-        // FogParameters.environmental*() methods don't exist in Sodium 0.6.x
+        // MC 1.21.1 / Embeddium 1.0.x: Environmental fog disabled
+        // FogParameters.environmental*() methods don't exist in Embeddium 1.0.x
         // RenderSystem.getShaderFog*() returns standard fog (underwater/lava) not environmental fog
-        // TODO: Research Sodium 0.6.x environmental fog API or implement custom distance-based fog
+        // TODO: Research Embeddium environmental fog API or implement custom distance-based fog
         if (this.useEnvFog) {
             // Disable fog uniforms - set to zero (no fog effect)
             glUniform4f(4, 0, 0, 0, 0);

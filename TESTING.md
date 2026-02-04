@@ -40,22 +40,22 @@ In the Java settings, add these JVM arguments for better performance:
 
 ## Step 2: Install Required Dependencies
 
-### 2.1 Download Sodium for NeoForge
+### 2.1 Download Embeddium for NeoForge
 
-Voxy requires **Sodium 0.6.9 or later** for NeoForge 1.21.1:
+Voxy requires **Embeddium 1.0.x** for NeoForge 1.21.1:
 
-1. Go to [Modrinth Sodium page](https://modrinth.com/mod/sodium) or [CurseForge Sodium page](https://www.curseforge.com/minecraft/mc-mods/sodium)
-2. Download the **NeoForge 1.21.1** compatible version (0.6.9+)
+1. Go to [Modrinth Embeddium page](https://modrinth.com/mod/embeddium)
+2. Download the **NeoForge 1.21.1** compatible version (1.0.x)
 3. **Important:** Ensure you download the **NeoForge** version, NOT the Fabric version
 
-### 2.2 Install Sodium
+### 2.2 Install Embeddium
 
 1. In Prism Launcher, right-click the instance
 2. Select **"Edit Instance"**
 3. Navigate to **"Mods"** tab
 4. Click **"Add .jar"** or **"Add file"**
-5. Select the downloaded Sodium jar file
-6. Verify Sodium appears in the mod list
+5. Select the downloaded Embeddium jar file
+6. Verify Embeddium appears in the mod list
 
 ## Step 3: Install Voxy Mod
 
@@ -78,12 +78,12 @@ build/libs/voxy-0.2.9-alpha.jar
 2. Click **"Add .jar"**
 3. Navigate to `build/libs/voxy-0.2.9-alpha.jar`
 4. Click **"Open"**
-5. Verify both Sodium and Voxy appear in the mod list
+5. Verify both Embeddium and Voxy appear in the mod list
 
 ### 3.3 Verify Dependencies
 
 Ensure the following mods are installed and enabled:
-- ✅ **Sodium** (0.6.9+)
+- ✅ **Embeddium** (1.0.x)
 - ✅ **Voxy** (0.2.9-alpha)
 
 ## Step 4: Launch Configuration
@@ -151,13 +151,13 @@ To check for errors:
 **Symptoms:** Game crashes before reaching main menu
 
 **Possible Causes:**
-1. Incompatible Sodium version (check you have NeoForge version, not Fabric)
+1. Incompatible Embeddium version (check you have NeoForge version, not Fabric)
 2. Java version mismatch (ensure Java 21+)
 3. Missing NeoForge dependencies
 
 **Fix:**
 - Check `crash-reports/` folder for crash details
-- Verify Sodium is the NeoForge version
+- Verify Embeddium is the NeoForge version
 - Ensure NeoForge 21.1+ is installed
 
 #### Issue: Black/Missing Textures

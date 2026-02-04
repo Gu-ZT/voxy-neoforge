@@ -125,7 +125,7 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         glBindFramebuffer(GL30.GL_FRAMEBUFFER, targetFb);
 
         this.depthCopy.bind();
-        int depthTexture = glGetNamedFramebufferAttachmentParameteri(sourceFrameBuffer, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME);
+        int depthTexture = getDepthAttachmentTextureId(sourceFrameBuffer);
         glBindTextureUnit(0, depthTexture);
         glBindSampler(0, DEPTH_SAMPLER);
         glUniform2f(1,((float)width)/srcWidth, ((float)height)/srcHeight);
@@ -164,6 +164,22 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         //Make voxy terrain render only where there isnt mc terrain
         glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
         glStencilFunc(GL_EQUAL, 1, 0xFF);
+    }
+
+    private static int getDepthAttachmentTextureId(int framebuffer) {
+        // Iris / MC can attach depth as GL_DEPTH_STENCIL_ATTACHMENT. Query both to be robust.
+        int depthTexture = glGetNamedFramebufferAttachmentParameteri(framebuffer, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME);
+        if (depthTexture != 0) {
+            return depthTexture;
+        }
+
+        depthTexture = glGetNamedFramebufferAttachmentParameteri(framebuffer, GL_DEPTH_STENCIL_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME);
+        if (depthTexture != 0) {
+            return depthTexture;
+        }
+
+        // No depth attachment found; return 0 so subsequent GL errors are obvious in logs/debug output.
+        return 0;
     }
 
     private static final long SCRATCH = MemoryUtil.nmemAlloc(4*4*4);

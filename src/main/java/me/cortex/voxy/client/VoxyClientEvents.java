@@ -1,6 +1,7 @@
 package me.cortex.voxy.client;
 
 import me.cortex.voxy.client.config.VoxyConfig;
+import me.cortex.voxy.client.compat.IrisCompatManager;
 import net.minecraft.client.renderer.FogRenderer;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -28,6 +29,10 @@ public class VoxyClientEvents {
      */
     @SubscribeEvent
     public static void onRenderFog(ViewportEvent.RenderFog event) {
+        boolean shaderPackEnabled = IrisCompatManager.isShaderPackEnabled();
+        if (shaderPackEnabled && !VoxyConfig.CONFIG.enableShaderPackFogOverride) {
+            return;
+        }
         // Only modify terrain fog when Voxy is enabled and rendering
         if (event.getMode() == FogRenderer.FogMode.FOG_TERRAIN
                 && VoxyConfig.CONFIG.enabled

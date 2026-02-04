@@ -3,8 +3,8 @@ package me.cortex.voxy.client.core.rendering;
 import me.cortex.voxy.client.core.gl.GlBuffer;
 import me.cortex.voxy.client.core.rendering.util.DepthFramebuffer;
 import me.cortex.voxy.client.core.rendering.util.HiZBuffer;
-// TODO: FogParameters removed in Sodium 0.6.x - fog rendering disabled for now
-// import net.caffeinemc.mods.sodium.client.util.FogParameters;
+// TODO: FogParameters integration not wired on NeoForge 1.21.1 yet
+// import net.minecraft.client.renderer.FogParameters;
 import net.minecraft.util.Mth;
 import org.joml.*;
 import org.jetbrains.annotations.Nullable;
@@ -37,7 +37,7 @@ public abstract class Viewport <A extends Viewport<A>> {
     public double cameraX;
     public double cameraY;
     public double cameraZ;
-    // Disabled for Sodium 0.6.x compatibility - FogParameters no longer exists
+    // Disabled for NeoForge 1.21.1 compatibility - FogParameters not wired
     // @Nullable public FogParameters fogParameters;
 
     public final Matrix4f MVP = new Matrix4f();
@@ -91,7 +91,7 @@ public abstract class Viewport <A extends Viewport<A>> {
         return (A) this;
     }
 
-    // Disabled for Sodium 0.6.x compatibility - FogParameters no longer exists
+    // Disabled for NeoForge 1.21.1 compatibility - FogParameters not wired
     /*
     public A setFogParameters(FogParameters fogParameters) {
         this.fogParameters = fogParameters;

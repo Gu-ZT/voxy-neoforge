@@ -3,7 +3,6 @@ package me.cortex.voxy.commonImpl;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.config.Serialization;
 import net.neoforged.api.distmarker.Dist;
-import net.neoforged.fml.ModList;
 import net.neoforged.fml.loading.FMLLoader;
 import net.neoforged.fml.loading.LoadingModList;
 

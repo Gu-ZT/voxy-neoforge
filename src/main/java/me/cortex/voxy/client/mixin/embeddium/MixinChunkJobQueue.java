@@ -1,4 +1,4 @@
-package me.cortex.voxy.client.mixin.sodium;
+package me.cortex.voxy.client.mixin.embeddium;
 
 import me.cortex.voxy.client.compat.SemaphoreBlockImpersonator;
 import me.cortex.voxy.client.config.VoxyConfig;
@@ -13,14 +13,14 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import java.util.concurrent.Semaphore;
 
-@Mixin(targets={"net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkJobQueue"},remap = false)
+@Mixin(targets={"org.embeddedt.embeddium.impl.render.chunk.compile.executor.ChunkJobQueue"}, remap = false)
 public class MixinChunkJobQueue {
     @Unique private MultiThreadPrioritySemaphore.Block voxy$semaphoreBlock;
 
     @Redirect(method = "<init>", at = @At(value = "NEW", target = "(I)Ljava/util/concurrent/Semaphore;"))
     private Semaphore voxy$injectUnifiedPool(int permits) {
         var instance = VoxyCommon.getInstance();
-        if (instance != null && !VoxyConfig.CONFIG.dontUseSodiumBuilderThreads) {
+        if (instance != null && !VoxyConfig.CONFIG.dontUseEmbeddiumBuilderThreads) {
             this.voxy$semaphoreBlock = instance.getThreadPool().groupSemaphore.createBlock();
             return new SemaphoreBlockImpersonator(this.voxy$semaphoreBlock);
         }
@@ -28,7 +28,7 @@ public class MixinChunkJobQueue {
     }
 
     @Inject(method = "shutdown", at = @At("RETURN"))
-    private void voxy$injectAtShutdown(CallbackInfoReturnable ci) {
+    private void voxy$injectAtShutdown(CallbackInfoReturnable<?> ci) {
         if (this.voxy$semaphoreBlock != null) {
             this.voxy$semaphoreBlock.free();
         }

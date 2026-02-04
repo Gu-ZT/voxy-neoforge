@@ -7,6 +7,7 @@ import com.mojang.blaze3d.shaders.FogShape;
 import com.mojang.blaze3d.systems.RenderSystem;
 import me.cortex.voxy.client.TimingStatistics;
 import me.cortex.voxy.client.VoxyClient;
+import me.cortex.voxy.client.compat.IrisCompatManager;
 import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.gl.Capabilities;
 import me.cortex.voxy.client.core.gl.GlBuffer;
@@ -36,9 +37,8 @@ import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.thread.ServiceManager;
 import me.cortex.voxy.common.world.WorldEngine;
 import me.cortex.voxy.commonImpl.VoxyCommon;
-import net.caffeinemc.mods.sodium.client.render.chunk.ChunkRenderMatrices;
-// TODO: FogParameters removed in Sodium 0.6.x - fog rendering disabled for now
-// import net.caffeinemc.mods.sodium.client.util.FogParameters;
+    // TODO: FogParameters integration not wired on NeoForge 1.21.1 yet
+    // import net.minecraft.client.renderer.FogParameters;
 import net.minecraft.client.Minecraft;
 import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
@@ -170,8 +170,8 @@ public class VoxyRenderSystem {
     }
 
 
-    // Sodium 0.6.x compatibility: FogParameters parameter removed
-    public Viewport<?> setupViewport(ChunkRenderMatrices matrices, double cameraX, double cameraY, double cameraZ) {
+    // Embeddium compatibility: FogParameters integration not wired
+    public Viewport<?> setupViewport(Matrix4fc projection, Matrix4fc modelView, double cameraX, double cameraY, double cameraZ) {
         var viewport = this.getViewport();
         if (viewport == null) {
             return null;
@@ -185,7 +185,7 @@ public class VoxyRenderSystem {
         }
 
         //cameraY += 100;
-        var projection = computeProjectionMat(matrices.projection());//RenderSystem.getProjectionMatrix();
+        var projectionMat = computeProjectionMat(projection);//RenderSystem.getProjectionMatrix();
         //var projection = ShadowMatrices.createOrthoMatrix(160, -16*300, 16*300);
         //var projection = new Matrix4f(matrices.projection());
 
@@ -204,12 +204,12 @@ public class VoxyRenderSystem {
         }
 
         viewport
-                .setVanillaProjection(matrices.projection())
-                .setProjection(projection)
-                .setModelView(new Matrix4f(matrices.modelView()))
+                .setVanillaProjection(projection)
+                .setProjection(projectionMat)
+                .setModelView(new Matrix4f(modelView))
                 .setCamera(cameraX, cameraY, cameraZ)
                 .setScreenSize(width, height)
-                // Disabled for Sodium 0.6.x compatibility - FogParameters no longer exists
+                // Disabled for Embeddium compatibility - FogParameters not wired
                 // .setFogParameters(fogParameters)
                 .update();
 
@@ -262,8 +262,7 @@ public class VoxyRenderSystem {
         this.pipeline.preSetup(viewport);
 
         TimingStatistics.E.start();
-        // MC 1.21.1 NeoForge: Iris shader integration excluded - irisShadowActive() returns false (no Iris shadows)
-        if ((!VoxyClient.disableSodiumChunkRender())&&!false) {
+        if ((!VoxyClient.disableEmbeddiumChunkRender()) && !IrisCompatManager.isShadowActive()) {
             this.chunkBoundRenderer.render(viewport);
         } else {
             viewport.depthBoundingBuffer.clear(0);
@@ -313,8 +312,7 @@ public class VoxyRenderSystem {
                 glBindSampler(i, 0);
             }
 
-            // MC 1.21.1 NeoForge: Iris shader integration excluded - clearIrisSamplers() is a no-op
-            // IrisUtil.clearIrisSamplers();//Thanks iris (sigh)
+            IrisCompatManager.clearSamplers();
 
             //TODO: should/needto actually restore all of these, not just clear them
             //Clear all the bindings
@@ -322,7 +320,7 @@ public class VoxyRenderSystem {
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, oldBufferBindings[i]);
             }
 
-            //((SodiumShader) Iris.getPipelineManager().getPipelineNullable().getSodiumPrograms().getProgram(DefaultTerrainRenderPasses.CUTOUT).getInterface()).setupState(DefaultTerrainRenderPasses.CUTOUT, fogParameters);
+            //(Embeddium shader integration not wired)
         }
 
         TimingStatistics.all.stop();
@@ -400,7 +398,7 @@ public class VoxyRenderSystem {
         // meaning that it explodes (due to near plane clipping).. _badly_ with the rastered culling being wrong in rare cases for the immediate
         // sections rendered after the vanilla render distance
         float nearVoxy = Minecraft.getInstance().gameRenderer.getRenderDistance()<=32.0f?8f:16f;
-        nearVoxy = VoxyClient.disableSodiumChunkRender()?0.1f:nearVoxy;
+        nearVoxy = VoxyClient.disableEmbeddiumChunkRender()?0.1f:nearVoxy;
 
         return base.mulLocal(
                 makeProjectionMatrix(0.05f, Minecraft.getInstance().gameRenderer.getDepthFar()).invert(),
@@ -425,8 +423,9 @@ public class VoxyRenderSystem {
     }
 
     public Viewport<?> getViewport() {
-        // MC 1.21.1 NeoForge: Iris shadow integration disabled - Oculus (NeoForge Iris port) not yet supported
-        // TODO: Add Oculus shadow detection when available
+        if (IrisCompatManager.isShadowActive()) {
+            return null;
+        }
         return this.viewportSelector.getViewport();
     }
 
