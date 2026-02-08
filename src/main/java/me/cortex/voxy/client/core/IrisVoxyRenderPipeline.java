@@ -24,6 +24,9 @@ import static org.lwjgl.opengl.GL31.GL_UNIFORM_BUFFER;
 import static org.lwjgl.opengl.GL45C.*;
 
 public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
+    private static final boolean ENABLE_IRIS_TEMPORAL_PASS =
+            System.getProperty("voxy.irisTemporalPass", "false").equalsIgnoreCase("true");
+
     private final IrisVoxyRenderPipelineData data;
     private final FullscreenBlit depthBlit = new FullscreenBlit("voxy:post/blit_texture_depth_cutout.frag");
     public final DepthFramebuffer fbTranslucent = new DepthFramebuffer(this.fb.getFormat());
@@ -135,6 +138,13 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
     }
 
     @Override
+    protected boolean shouldRenderTemporal(Viewport<?> viewport) {
+        // The temporal bridge can create persistent overlay artifacts in shader-pack pipelines.
+        // Keep it opt-in for Iris until a dedicated DH-native temporal path is implemented.
+        return ENABLE_IRIS_TEMPORAL_PASS;
+    }
+
+    @Override
     protected void finish(Viewport<?> viewport, int sourceFrameBuffer, int srcWidth, int srcHeight) {
         if (this.data.renderToVanillaDepth && srcWidth == viewport.width  && srcHeight == viewport.height) {//We can only depthblit out if destination size is the same
             glColorMask(false, false, false, false);
@@ -189,6 +199,8 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
     @Override
     public void addDebug(List<String> debug) {
         debug.add("Using: " + this.getClass().getSimpleName());
+        debug.add("Iris temporal pass: " + (ENABLE_IRIS_TEMPORAL_PASS ? "enabled" : "disabled"));
+        debug.add("Shader compat mode: " + this.data.compatibilityMode);
         super.addDebug(debug);
     }
 

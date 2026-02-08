@@ -41,6 +41,8 @@ public class MixinLevelRenderer {
 
                 var pos = camera.getPosition();
                 IrisUtil.CAPTURED_VIEWPORT_PARAMETERS = new IrisUtil.CapturedViewportParameters(new ChunkRenderMatrices(projectionMatrix, frustumMatrix), pos.x, pos.y, pos.z);
+                // Keep Voxy matrices current for this render frame before Iris uniform evaluation.
+                renderer.setupViewport(projectionMatrix, frustumMatrix, pos.x, pos.y, pos.z);
             }
         }
     }

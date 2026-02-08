@@ -20,7 +20,7 @@ public class MixinChunkJobQueue {
     @Redirect(method = "<init>", at = @At(value = "NEW", target = "(I)Ljava/util/concurrent/Semaphore;"))
     private Semaphore voxy$injectUnifiedPool(int permits) {
         var instance = VoxyCommon.getInstance();
-        if (instance != null && !VoxyConfig.CONFIG.dontUseEmbeddiumBuilderThreads) {
+        if (instance != null && !VoxyConfig.CONFIG.dontUseEmbeddiumBuilderThreads()) {
             this.voxy$semaphoreBlock = instance.getThreadPool().groupSemaphore.createBlock();
             return new SemaphoreBlockImpersonator(this.voxy$semaphoreBlock);
         }

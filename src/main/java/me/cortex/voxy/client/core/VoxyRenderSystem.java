@@ -30,6 +30,7 @@ import me.cortex.voxy.client.core.rendering.section.geometry.IGeometryData;
 import me.cortex.voxy.client.core.rendering.util.DownloadStream;
 import me.cortex.voxy.client.core.rendering.util.PrintfDebugUtil;
 import me.cortex.voxy.client.core.rendering.util.UploadStream;
+import me.cortex.voxy.client.core.util.DHImpersonationSemantics;
 import me.cortex.voxy.client.core.util.GPUTiming;
 // MC 1.21.1 NeoForge: Iris shader integration excluded
 // import me.cortex.voxy.client.core.util.IrisUtil;
@@ -52,10 +53,21 @@ import static org.lwjgl.opengl.GL11.glGetIntegerv;
 import static org.lwjgl.opengl.GL11C.*;
 import static org.lwjgl.opengl.GL30C.*;
 import static org.lwjgl.opengl.GL33.glBindSampler;
+import static org.lwjgl.opengl.GL33C.GL_SAMPLER_BINDING;
+import static org.lwjgl.opengl.GL31C.GL_UNIFORM_BUFFER;
+import static org.lwjgl.opengl.GL31C.GL_UNIFORM_BUFFER_BINDING;
+import static org.lwjgl.opengl.GL40C.GL_DRAW_INDIRECT_BUFFER;
+import static org.lwjgl.opengl.GL40C.GL_DRAW_INDIRECT_BUFFER_BINDING;
 import static org.lwjgl.opengl.GL43.GL_SHADER_STORAGE_BUFFER;
 import static org.lwjgl.opengl.GL43C.GL_SHADER_STORAGE_BUFFER_BINDING;
+import static org.lwjgl.opengl.ARBIndirectParameters.GL_PARAMETER_BUFFER_ARB;
+import static org.lwjgl.opengl.ARBIndirectParameters.GL_PARAMETER_BUFFER_BINDING_ARB;
+import static org.lwjgl.opengl.GL45C.glBindTextureUnit;
 
 public class VoxyRenderSystem {
+    private static final boolean RENDER_LODS_IN_IRIS_SHADOW_PASS =
+            System.getProperty("voxy.renderLodsInIrisShadowPass", "false").equalsIgnoreCase("true");
+
     private final WorldEngine worldIn;
 
 
@@ -147,7 +159,7 @@ public class VoxyRenderSystem {
                         this.nodeManager::addTopLevel,
                         this.nodeManager::removeTopLevel);
 
-                this.setRenderDistance(VoxyConfig.CONFIG.sectionRenderDistance);
+                this.setRenderDistance(VoxyConfig.CONFIG.getSectionRenderDistance());
             }
 
             this.chunkBoundRenderer = new ChunkBoundRenderer(this.pipeline);
@@ -220,8 +232,128 @@ public class VoxyRenderSystem {
         return viewport;
     }
 
+    private record ViewportSnapshot(
+            int width,
+            int height,
+            int frameId,
+            Matrix4f vanillaProjection,
+            Matrix4f projection,
+            Matrix4f modelView,
+            double cameraX,
+            double cameraY,
+            double cameraZ) {
+    }
+
+    private static ViewportSnapshot snapshotViewport(Viewport<?> viewport) {
+        return new ViewportSnapshot(
+                viewport.width,
+                viewport.height,
+                viewport.frameId,
+                new Matrix4f(viewport.vanillaProjection),
+                new Matrix4f(viewport.projection),
+                new Matrix4f(viewport.modelView),
+                viewport.cameraX,
+                viewport.cameraY,
+                viewport.cameraZ
+        );
+    }
+
+    private static void restoreViewport(Viewport<?> viewport, ViewportSnapshot snapshot) {
+        viewport
+                .setVanillaProjection(snapshot.vanillaProjection)
+                .setProjection(new Matrix4f(snapshot.projection))
+                .setModelView(new Matrix4f(snapshot.modelView))
+                .setCamera(snapshot.cameraX, snapshot.cameraY, snapshot.cameraZ)
+                .setScreenSize(snapshot.width, snapshot.height);
+        viewport.frameId = snapshot.frameId;
+        viewport.update(snapshot.width > 0 && snapshot.height > 0);
+    }
+
+    public void renderShadowPass(Matrix4fc projection, Matrix4fc modelView, double cameraX, double cameraY, double cameraZ) {
+        var viewport = this.viewportSelector.getViewport();
+        if (viewport == null) {
+            return;
+        }
+
+        //Do some very cheeky stuff for MiB
+        if (VoxyCommon.IS_MINE_IN_ABYSS) {
+            int sector = (((int)Math.floor(cameraX)>>4)+512)>>10;
+            cameraX -= sector<<14;//10+4
+            cameraY += (16+(256-32-sector*30))*16;
+        }
+
+        var snapshot = snapshotViewport(viewport);
+        try {
+            // Do not resize per-viewport buffers during Iris shadow rendering: Iris swaps FBOs and viewports,
+            // and our depthBoundingBuffer isn't needed for shadow rendering.
+            viewport
+                    .setVanillaProjection(projection)
+                    .setProjection(new Matrix4f(projection))
+                    .setModelView(new Matrix4f(modelView))
+                    .setCamera(cameraX, cameraY, cameraZ)
+                    .setScreenSize(snapshot.width, snapshot.height)
+                    .update(false);
+
+            this.renderShadow(viewport);
+        } finally {
+            restoreViewport(viewport, snapshot);
+        }
+    }
+
+    public void renderShadow(Viewport<?> viewport) {
+        if (viewport == null) {
+            return;
+        }
+
+        var sectionRenderer = (AbstractSectionRenderer) this.pipeline.sectionRenderer;
+
+        int oldProgram = glGetInteger(GL_CURRENT_PROGRAM);
+        int oldVao = glGetInteger(GL_VERTEX_ARRAY_BINDING);
+        int oldElementArray = glGetInteger(GL_ELEMENT_ARRAY_BUFFER_BINDING);
+        int oldDrawIndirect = glGetInteger(GL_DRAW_INDIRECT_BUFFER_BINDING);
+        int oldParameterBuffer = glGetInteger(GL_PARAMETER_BUFFER_BINDING_ARB);
+
+        boolean oldDepthTest = glIsEnabled(GL_DEPTH_TEST);
+        boolean oldCullFace = glIsEnabled(GL_CULL_FACE);
+        boolean oldBlend = glIsEnabled(GL_BLEND);
+
+        int oldTex0 = glGetIntegeri(GL_TEXTURE_BINDING_2D, 0);
+        int oldSampler0 = glGetIntegeri(GL_SAMPLER_BINDING, 0);
+
+        int oldUbo0 = glGetIntegeri(GL_UNIFORM_BUFFER_BINDING, 0);
+        int[] oldSsbo = new int[16];
+        for (int i = 0; i < oldSsbo.length; i++) {
+            oldSsbo[i] = glGetIntegeri(GL_SHADER_STORAGE_BUFFER_BINDING, i);
+        }
+
+        try {
+            sectionRenderer.renderShadow(viewport);
+        } finally {
+            glUseProgram(oldProgram);
+            glBindVertexArray(oldVao);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, oldElementArray);
+            glBindBuffer(GL_DRAW_INDIRECT_BUFFER, oldDrawIndirect);
+            glBindBuffer(GL_PARAMETER_BUFFER_ARB, oldParameterBuffer);
+
+            glBindTextureUnit(0, oldTex0);
+            glBindSampler(0, oldSampler0);
+
+            glBindBufferBase(GL_UNIFORM_BUFFER, 0, oldUbo0);
+            for (int i = 0; i < oldSsbo.length; i++) {
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, oldSsbo[i]);
+            }
+
+            if (oldDepthTest) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+            if (oldCullFace) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
+            if (oldBlend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+        }
+    }
+
     public void renderOpaque(Viewport<?> viewport) {
         if (viewport == null) {
+            return;
+        }
+        if (IrisCompatManager.isShadowActive() && !RENDER_LODS_IN_IRIS_SHADOW_PASS) {
             return;
         }
 
@@ -366,11 +498,11 @@ public class VoxyRenderSystem {
         float DECREASE_PER_SECOND = 30;
         //Auto fps targeting
         if (Minecraft.getInstance().getFps() < MIN_FPS) {
-            VoxyConfig.CONFIG.subDivisionSize = Math.min(VoxyConfig.CONFIG.subDivisionSize + INCREASE_PER_SECOND / Math.max(1f, Minecraft.getInstance().getFps()), 256);
+            VoxyConfig.CONFIG.setSubDivisionSize(Math.min(VoxyConfig.CONFIG.getSubDivisionSize() + INCREASE_PER_SECOND / Math.max(1f, Minecraft.getInstance().getFps()), 256));
         }
 
         if (MAX_FPS < Minecraft.getInstance().getFps() && canDecreaseSize) {
-            VoxyConfig.CONFIG.subDivisionSize = Math.max(VoxyConfig.CONFIG.subDivisionSize - DECREASE_PER_SECOND / Math.max(1f, Minecraft.getInstance().getFps()), 28);
+            VoxyConfig.CONFIG.setSubDivisionSize(Math.max(VoxyConfig.CONFIG.getSubDivisionSize() - DECREASE_PER_SECOND / Math.max(1f, Minecraft.getInstance().getFps()), 28));
         }
     }
 
@@ -397,13 +529,13 @@ public class VoxyRenderSystem {
         // at short render distances the vanilla terrain doesnt end up covering the 16f near plane voxy uses
         // meaning that it explodes (due to near plane clipping).. _badly_ with the rastered culling being wrong in rare cases for the immediate
         // sections rendered after the vanilla render distance
-        float nearVoxy = Minecraft.getInstance().gameRenderer.getRenderDistance()<=32.0f?8f:16f;
-        nearVoxy = VoxyClient.disableEmbeddiumChunkRender()?0.1f:nearVoxy;
+        float nearVoxy = DHImpersonationSemantics.getNearPlaneBlocks();
+        float farVoxy = DHImpersonationSemantics.ENABLED ? DHImpersonationSemantics.getFarPlaneBlocks() : 16 * 3000;
 
         return base.mulLocal(
                 makeProjectionMatrix(0.05f, Minecraft.getInstance().gameRenderer.getDepthFar()).invert(),
                 new Matrix4f()
-        ).mulLocal(makeProjectionMatrix(nearVoxy, 16*3000));
+        ).mulLocal(makeProjectionMatrix(nearVoxy, farVoxy));
     }
 
     private boolean frexStillHasWork() {
@@ -426,6 +558,11 @@ public class VoxyRenderSystem {
         if (IrisCompatManager.isShadowActive()) {
             return null;
         }
+        return this.viewportSelector.getViewport();
+    }
+
+    // Used by uniform/sampler providers that must remain valid during Iris shadow pass setup.
+    public Viewport<?> getViewportForUniforms() {
         return this.viewportSelector.getViewport();
     }
 

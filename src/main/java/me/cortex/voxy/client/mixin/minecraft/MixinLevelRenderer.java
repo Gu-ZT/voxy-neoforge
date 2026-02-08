@@ -60,7 +60,7 @@ public abstract class MixinLevelRenderer implements IGetVoxyRenderSystem {
     @Override
     public void createRenderer() {
         if (this.renderer != null) throw new IllegalStateException("Cannot have multiple renderers");
-        if (!VoxyConfig.CONFIG.enabled) {
+        if (!VoxyConfig.CONFIG.isEnabled()) {
             Logger.info("Not creating renderer due to disabled");
             return;
         }

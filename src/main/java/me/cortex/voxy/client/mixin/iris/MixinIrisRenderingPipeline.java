@@ -61,7 +61,8 @@ public class MixinIrisRenderingPipeline implements IGetVoxyPatchData, IGetIrisVo
     private void voxy$injectViewportSetup(CallbackInfo ci) {
         if (IrisUtil.CAPTURED_VIEWPORT_PARAMETERS != null) {
             var renderer = ((IGetVoxyRenderSystem) Minecraft.getInstance().levelRenderer).getVoxyRenderSystem();
-            if (renderer != null) {
+            // renderLevel hook already updates viewport for this frame; keep this as a fallback path only.
+            if (renderer != null && renderer.getViewport() == null) {
                 IrisUtil.CAPTURED_VIEWPORT_PARAMETERS.apply(renderer);
             }
         }

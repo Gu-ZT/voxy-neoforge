@@ -61,6 +61,8 @@ public abstract class AbstractSectionRenderer <T extends Viewport<T>, J extends 
     public abstract void buildDrawCalls(T viewport);
     public abstract void renderTemporal(T viewport);
     public abstract void renderTranslucent(T viewport);
+    public void renderShadow(T viewport) {
+    }
     public abstract T createViewport();
     public abstract void free();
 

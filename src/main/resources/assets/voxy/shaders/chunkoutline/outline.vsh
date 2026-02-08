@@ -18,26 +18,30 @@ ivec3 unpackPos(ivec2 pos) {
 bool shouldRender(ivec3 icorner) {
     // MC 1.21.1 NeoForge: Configurable boundary buffer for LOD/vanilla chunk transition
     //
-    // CORRECTED LOGIC: The buffer should SHRINK the "vanilla present" detection area,
-    // NOT expand it. This causes LODs to render in a LARGER area (overlap with vanilla),
-    // which is hidden by depth testing. The overlap prevents gaps/pop-in.
+    // The buffer SHRINKS the "vanilla present" detection range, causing LODs to render
+    // in a LARGER area (overlapping with vanilla edges). Depth testing hides the overlap.
     //
-    // boundaryBuffer controls the INWARD shrink:
+    // boundaryBuffer (0-4 blocks):
     //   0 = exact match with Embeddium (may have gaps at boundaries)
-    //   1-4 = shrink detection, LODs overlap with vanilla edge (smoother transition)
+    //   1-4 = shrink detection range, more LOD overlap (smoother transition)
     //
-    // Higher values = MORE LOD overlap = smoother transitions but more overdraw
+    // FIX: Apply buffer to distance threshold, not corner positions.
+    // This provides uniform overlap at ALL angles including diagonals.
+    // Previous approach shrunk corners per-axis, giving only buf/sqrt(2) at 45°.
 
-    int buf = boundaryBuffer;
+    // Chunk AABB corners (original, no shrinkage)
+    ivec3 minCorner = icorner;
+    ivec3 maxCorner = icorner + 16;
 
-    // SHRINK the detection area by moving corners INWARD (opposite of before)
-    // This makes fewer chunks register as "vanilla present", so LODs render more
-    ivec3 minCorner = icorner + buf;      // Move min corner INWARD (toward center)
-    ivec3 maxCorner = icorner + 16 - buf; // Move max corner INWARD (toward center)
+    // Select closest corner of AABB to camera (handles all quadrants)
+    vec3 corner = vec3(mix(mix(ivec3(0), minCorner, greaterThan(minCorner, ivec3(0))), maxCorner, lessThan(maxCorner, ivec3(0)))) - negInnerSec.xyz;
 
-    vec3 corner = vec3(mix(mix(ivec3(0), minCorner, greaterThan(minCorner, ivec3(0))), maxCorner, lessThan(maxCorner, ivec3(0))))-negInnerSec.xyz;
-    bool visible = (corner.x*corner.x + corner.z*corner.z) < (negInnerSec.w*negInnerSec.w);
-    visible = visible && abs(corner.y) < negInnerSec.w;
+    // MC Java Edition uses SQUARE render distance (chunk grid), not circular.
+    // Chebyshev distance (max of abs) matches vanilla's square pattern.
+    // Shrink the threshold by buffer - uniform at all angles including diagonals.
+    float effectiveRange = negInnerSec.w - float(boundaryBuffer);
+    bool visible = max(abs(corner.x), abs(corner.z)) < effectiveRange;
+    visible = visible && abs(corner.y) < effectiveRange;
     return visible;
 }
 

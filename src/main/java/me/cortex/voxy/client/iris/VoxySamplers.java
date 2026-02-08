@@ -12,7 +12,7 @@ public class VoxySamplers {
             String[] opaqueNames = new String[]{"vxDepthTexOpaque"};
             String[] translucentNames = new String[]{"vxDepthTexTrans"};
 
-            if (IrisShaderPatch.IMPERSONATE_DISTANT_HORIZONS) {
+            if (IrisShaderPatch.shouldImpersonateDistantHorizons()) {
                 opaqueNames = new String[]{"vxDepthTexOpaque", "dhDepthTex1"};
                 translucentNames = new String[]{"vxDepthTexTrans", "dhDepthTex", "dhDepthTex0"};
             }

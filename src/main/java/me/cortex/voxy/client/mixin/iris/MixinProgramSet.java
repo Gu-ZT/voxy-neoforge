@@ -29,9 +29,19 @@ public class MixinProgramSet implements IGetVoxyPatchData {
     private void voxy$injectPatchMaker(AbsolutePackPath directory, Function<AbsolutePackPath, String> sourceProvider, ShaderProperties shaderProperties, ShaderPack pack, CallbackInfo ci) {
         if (VoxyConfig.CONFIG.isRenderingEnabled() && IrisUtil.SHADER_SUPPORT) {
             this.patchData = IrisShaderPatch.makePatch(pack, directory, sourceProvider);
-            if (this.patchData == null && VoxyConfig.CONFIG.enableShaderPackFallbackPatch) {
+            if (this.patchData == null && VoxyConfig.CONFIG.enableShaderPackFallbackPatch()) {
                 this.patchData = IrisShaderPatch.makeFallbackPatch(pack, (ProgramSet)(Object)this);
-                Logger.warn("Shader pack has no voxy.json; using fallback patch");
+                if (this.patchData.getCompatibilityMode() == IrisShaderPatch.CompatibilityMode.DH_NATIVE_CANDIDATE) {
+                    Logger.warn("Shader pack has DH programs but no voxy.json; using fallback patch (DH-native path pending)");
+                } else {
+                    Logger.warn("Shader pack has no voxy.json and no DH programs; using fallback patch");
+                }
+            }
+            if (this.patchData != null) {
+                if (this.patchData.getCompatibilityMode() == IrisShaderPatch.CompatibilityMode.DH_NATIVE_CANDIDATE) {
+                    IrisShaderPatch.enableDistantHorizonsImpersonation();
+                }
+                Logger.info("Voxy shader compatibility mode: " + this.patchData.getCompatibilityMode());
             }
         }
         /*

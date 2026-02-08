@@ -1,6 +1,7 @@
 package me.cortex.voxy.client;
 
 import me.cortex.voxy.client.config.VoxyConfig;
+import me.cortex.voxy.client.config.VoxyNeoForgeConfig;
 import me.cortex.voxy.client.compat.IrisCompatManager;
 import net.minecraft.client.renderer.FogRenderer;
 import net.neoforged.api.distmarker.Dist;
@@ -30,13 +31,13 @@ public class VoxyClientEvents {
     @SubscribeEvent
     public static void onRenderFog(ViewportEvent.RenderFog event) {
         boolean shaderPackEnabled = IrisCompatManager.isShaderPackEnabled();
-        if (shaderPackEnabled && !VoxyConfig.CONFIG.enableShaderPackFogOverride) {
+        if (shaderPackEnabled && !VoxyConfig.CONFIG.enableShaderPackFogOverride()) {
             return;
         }
         // Only modify terrain fog when Voxy is enabled and rendering
         if (event.getMode() == FogRenderer.FogMode.FOG_TERRAIN
-                && VoxyConfig.CONFIG.enabled
-                && VoxyConfig.CONFIG.enableRendering) {
+                && VoxyConfig.CONFIG.isEnabled()
+                && VoxyNeoForgeConfig.isRenderingEnabled()) {
 
             // Push fog to very large values (not MAX_VALUE to avoid shader math issues)
             // This removes the fog wall at vanilla render distance

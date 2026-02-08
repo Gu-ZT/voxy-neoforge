@@ -41,8 +41,8 @@ public class VoxyClientInstance extends VoxyInstance {
 
     @Override
     public void updateDedicatedThreads() {
-        int target = VoxyConfig.CONFIG.serviceThreads;
-        if (!VoxyConfig.CONFIG.dontUseEmbeddiumBuilderThreads) {
+        int target = VoxyConfig.CONFIG.getServiceThreads();
+        if (!VoxyConfig.CONFIG.dontUseEmbeddiumBuilderThreads()) {
             int builderThreads = RendererCompatManager.getBuilderThreadCount();
             if (builderThreads > 0) {
                 this.setNumThreads(Math.max(1, target - builderThreads));
@@ -72,7 +72,7 @@ public class VoxyClientInstance extends VoxyInstance {
 
     @Override
     public boolean isIngestEnabled(WorldIdentifier worldId) {
-        return (!this.noIngestOverride) && VoxyConfig.CONFIG.ingestEnabled;
+        return (!this.noIngestOverride) && VoxyConfig.CONFIG.isIngestEnabled();
     }
 
     private static class Config {

@@ -2,6 +2,9 @@ package me.cortex.voxy.client.iris;
 
 import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.IGetVoxyRenderSystem;
+import me.cortex.voxy.client.core.VoxyRenderSystem;
+import me.cortex.voxy.client.core.rendering.Viewport;
+import me.cortex.voxy.client.core.util.DHImpersonationSemantics;
 import net.irisshaders.iris.gl.uniform.UniformHolder;
 import net.minecraft.client.Minecraft;
 import org.joml.Matrix4f;
@@ -12,41 +15,45 @@ import java.util.function.Supplier;
 import static net.irisshaders.iris.gl.uniform.UniformUpdateFrequency.PER_FRAME;
 
 public class VoxyUniforms {
-
-    public static Matrix4f getViewProjection() {//This is 1 frame late ;-; cries, since the update occurs _before_ the voxy render pipeline
-        var getVrs = (IGetVoxyRenderSystem) Minecraft.getInstance().levelRenderer;
-        if (getVrs == null || getVrs.getVoxyRenderSystem() == null) {
-            return new Matrix4f();
+    private static Viewport<?> getViewportOrNull() {
+        var levelRenderer = Minecraft.getInstance().levelRenderer;
+        if (!(levelRenderer instanceof IGetVoxyRenderSystem getVrs)) {
+            return null;
         }
-        var vrs = getVrs.getVoxyRenderSystem();
-        return new Matrix4f(vrs.getViewport().MVP);
+        VoxyRenderSystem vrs = getVrs.getVoxyRenderSystem();
+        if (vrs == null) {
+            return null;
+        }
+        return vrs.getViewportForUniforms();
     }
 
-    public static Matrix4f getModelView() {//This is 1 frame late ;-; cries, since the update occurs _before_ the voxy render pipeline
-        var getVrs = (IGetVoxyRenderSystem) Minecraft.getInstance().levelRenderer;
-        if (getVrs == null || getVrs.getVoxyRenderSystem() == null) {
+    public static Matrix4f getViewProjection() {
+        var viewport = getViewportOrNull();
+        if (viewport == null || viewport.MVP == null) {
             return new Matrix4f();
         }
-        var vrs = getVrs.getVoxyRenderSystem();
-        return new Matrix4f(vrs.getViewport().modelView);
+        return new Matrix4f(viewport.MVP);
     }
 
-    public static Matrix4f getProjection() {//This is 1 frame late ;-; cries, since the update occurs _before_ the voxy render pipeline
-        var getVrs = (IGetVoxyRenderSystem) Minecraft.getInstance().levelRenderer;
-        if (getVrs == null || getVrs.getVoxyRenderSystem() == null) {
+    public static Matrix4f getModelView() {
+        var viewport = getViewportOrNull();
+        if (viewport == null || viewport.modelView == null) {
             return new Matrix4f();
         }
-        var vrs = getVrs.getVoxyRenderSystem();
-        var mat = vrs.getViewport().projection;
-        if (mat == null) {
+        return new Matrix4f(viewport.modelView);
+    }
+
+    public static Matrix4f getProjection() {
+        var viewport = getViewportOrNull();
+        if (viewport == null || viewport.projection == null) {
             return new Matrix4f();
         }
-        return new Matrix4f(mat);
+        return new Matrix4f(viewport.projection);
     }
 
     public static void addUniforms(UniformHolder uniforms) {
         uniforms
-                .uniform1i(PER_FRAME, "vxRenderDistance", ()-> VoxyConfig.CONFIG.sectionRenderDistance*32)//In chunks
+                .uniform1i(PER_FRAME, "vxRenderDistance", ()-> VoxyConfig.CONFIG.getSectionRenderDistance()*32)//In chunks
                 .uniformMatrix(PER_FRAME, "vxViewProj", VoxyUniforms::getViewProjection)
                 .uniformMatrix(PER_FRAME, "vxViewProjInv", new Inverted(VoxyUniforms::getViewProjection))
                 .uniformMatrix(PER_FRAME, "vxViewProjPrev", new PreviousMat(VoxyUniforms::getViewProjection))
@@ -57,12 +64,11 @@ public class VoxyUniforms {
                 .uniformMatrix(PER_FRAME, "vxProjInv", new Inverted(VoxyUniforms::getProjection))
                 .uniformMatrix(PER_FRAME, "vxProjPrev", new PreviousMat(VoxyUniforms::getProjection));
 
-        if (IrisShaderPatch.IMPERSONATE_DISTANT_HORIZONS) {
+        if (IrisShaderPatch.shouldImpersonateDistantHorizons()) {
             uniforms
-                    .uniform1f(PER_FRAME, "dhNearPlane", ()->16)//Presently hardcoded in voxy
-                    .uniform1f(PER_FRAME, "dhFarPlane", ()->16*3000)//Presently hardcoded in voxy
-
-                    .uniform1i(PER_FRAME, "dhRenderDistance", ()-> VoxyConfig.CONFIG.sectionRenderDistance*32*16)//In blocks
+                    .uniform1f(PER_FRAME, "dhNearPlane", DHImpersonationSemantics::getNearPlaneBlocks)
+                    .uniform1f(PER_FRAME, "dhFarPlane", DHImpersonationSemantics::getFarPlaneBlocks)
+                    .uniform1i(PER_FRAME, "dhRenderDistance", DHImpersonationSemantics::getRenderDistanceBlocks)
                     .uniformMatrix(PER_FRAME, "dhProjection", VoxyUniforms::getProjection)
                     .uniformMatrix(PER_FRAME, "dhProjectionInverse", new Inverted(VoxyUniforms::getProjection))
                     .uniformMatrix(PER_FRAME, "dhPreviousProjection", new PreviousMat(VoxyUniforms::getProjection));

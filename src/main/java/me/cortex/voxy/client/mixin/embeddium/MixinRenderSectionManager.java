@@ -49,7 +49,7 @@ public class MixinRenderSectionManager {
 
     @Inject(method = "onChunkRemoved", at = @At("HEAD"))
     private void injectIngest(int x, int z, CallbackInfo ci) {
-        if (VoxyConfig.CONFIG.ingestEnabled && !BOBBY_INSTALLED) {
+        if (VoxyConfig.CONFIG.isIngestEnabled() && !BOBBY_INSTALLED) {
             var cccm = (ICheekyClientChunkCache)this.world.getChunkSource();
             if (cccm != null) {
                 var chunk = cccm.voxy$cheekyGetChunk(x, z);
@@ -62,7 +62,7 @@ public class MixinRenderSectionManager {
 
     @Inject(method = "onChunkAdded", at = @At("HEAD"))
     private void voxy$ingestOnAdd(int x, int z, CallbackInfo ci) {
-        if (this.world.levelRenderer != null && VoxyConfig.CONFIG.ingestEnabled) {
+        if (this.world.levelRenderer != null && VoxyConfig.CONFIG.isIngestEnabled()) {
             var cccm = this.world.getChunkSource();
             if (cccm != null) {
                 var chunk = cccm.getChunk(x, z, ChunkStatus.FULL, false);
@@ -100,7 +100,7 @@ public class MixinRenderSectionManager {
 
         int x = instance.getChunkX(), y = instance.getChunkY(), z = instance.getChunkZ();
 
-        if (wasBuilt && VoxyConfig.CONFIG.ingestEnabled) {
+        if (wasBuilt && VoxyConfig.CONFIG.isIngestEnabled()) {
             var tracker = ((AccessorChunkTracker) ChunkTrackerHolder.get(this.world)).getChunkStatus();
             long key = ChunkPos.asLong(x, z);
             if (key != this.cachedChunkPos) {

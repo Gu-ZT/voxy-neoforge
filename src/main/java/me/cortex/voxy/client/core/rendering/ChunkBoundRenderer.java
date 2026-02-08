@@ -142,7 +142,7 @@ public class ChunkBoundRenderer {
             MemoryUtil.memPutFloat(ptr, renderDistance); ptr += 4;
 
             // LOD boundary buffer - configurable overlap to prevent pop-in
-            MemoryUtil.memPutInt(ptr, VoxyConfig.CONFIG.lodBoundaryBuffer); ptr += 4;
+            MemoryUtil.memPutInt(ptr, VoxyConfig.CONFIG.getLodBoundaryBuffer()); ptr += 4;
         }
         UploadStream.INSTANCE.commit();
 

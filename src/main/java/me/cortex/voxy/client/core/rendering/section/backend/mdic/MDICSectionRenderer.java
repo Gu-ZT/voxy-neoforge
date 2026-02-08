@@ -51,6 +51,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
     private static final int STATISTICS_BUFFER_BINDING = 8;
     private final Shader terrainShader;
     private final Shader translucentTerrainShader;
+    private final Shader shadowTerrainShader;
 
     private final Shader commandGenShader = Shader.make()
             .define("TRANSLUCENT_WRITE_BASE", 1024)
@@ -129,6 +130,22 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         translucentFrag = translucentFrag==null?frag:translucentFrag;
 
         this.translucentTerrainShader = tryCompilePatchedOrNormal(builder.define("TRANSLUCENT"), translucentFrag, frag);
+
+        // Shadow pass: compile a depth-only shader with cutout alpha discard, without TAA jitter.
+        String shadowVertex = ShaderLoader.parse("voxy:lod/gl46/quads3.vert");
+        String shadowFrag = ShaderLoader.parse("voxy:lod/gl46/shadow.frag");
+        this.shadowTerrainShader = Shader.make()
+                .defineIf("DEBUG_RENDER", false)
+                // Shadow shader doesn't care about face tinting, but the shared quad utilities require these defines
+                // when PATCHED_SHADER is not set.
+                .define("NO_SHADE_FACE_TINT", 1.0f)
+                .define("UP_FACE_TINT", 1.0f)
+                .define("DOWN_FACE_TINT", 1.0f)
+                .define("Z_AXIS_FACE_TINT", 1.0f)
+                .define("X_AXIS_FACE_TINT", 1.0f)
+                .addSource(ShaderType.VERTEX, shadowVertex)
+                .addSource(ShaderType.FRAGMENT, shadowFrag)
+                .compile();
     }
 
     private void uploadUniformBuffer(MDICViewport viewport) {
@@ -150,7 +167,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         // Earth curvature radius: 0 = disabled, otherwise compute radius in blocks
         // DH uses: radius = 6371000.0 / ratio (Earth radius in meters / ratio factor)
         // We use blocks (1 block = 1 meter), so same formula
-        int earthCurveRatio = VoxyConfig.CONFIG.earthCurveRatio;
+        int earthCurveRatio = VoxyConfig.CONFIG.getEarthCurveRatio();
         float earthRadius = 0.0f;
         if (earthCurveRatio >= 50) {
             earthRadius = 6371000.0f / earthCurveRatio;
@@ -169,6 +186,18 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, viewport.positionScratchBuffer.id);
         LightMapHelper.bind(1);
         glBindTextureUnit(2, viewport.depthBoundingBuffer.getDepthTex().id);
+
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, SharedIndexBuffer.INSTANCE.id());
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, viewport.drawCallBuffer.id);
+        glBindBuffer(GL_PARAMETER_BUFFER_ARB, viewport.drawCountCallBuffer.id);
+    }
+
+    private void bindShadowRenderingBuffers(MDICViewport viewport) {
+        glBindBufferBase(GL_UNIFORM_BUFFER, 0, this.uniform.id);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, this.geometryManager.getGeometryBuffer().id);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, this.geometryManager.getMetadataBuffer().id);
+        this.modelStore.bind(3, 4, 0);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, viewport.positionScratchBuffer.id);
 
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, SharedIndexBuffer.INSTANCE.id());
         glBindBuffer(GL_DRAW_INDIRECT_BUFFER, viewport.drawCallBuffer.id);
@@ -215,6 +244,31 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         this.uploadUniformBuffer(viewport);
 
         this.renderTerrain(viewport, 0, 4*3, Math.min((int)(this.geometryManager.getSectionCount()*4.4+128), 400_000));
+    }
+
+    @Override
+    public void renderShadow(MDICViewport viewport) {
+        if (this.geometryManager.getSectionCount() == 0) return;
+
+        this.uploadUniformBuffer(viewport);
+
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_BLEND);
+        glEnable(GL_DEPTH_TEST);
+
+        this.shadowTerrainShader.bind();
+        glBindVertexArray(GlVertexArray.STATIC_VAO);
+        this.bindShadowRenderingBuffers(viewport);
+
+        glMemoryBarrier(GL_COMMAND_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
+        glProvokingVertex(GL_FIRST_VERTEX_CONVENTION);
+        glMultiDrawElementsIndirectCountARB(GL_TRIANGLES, GL_UNSIGNED_SHORT, 0, 4 * 3,
+                Math.min((int) (this.geometryManager.getSectionCount() * 4.4 + 128), 400_000), 0);
+
+        glEnable(GL_CULL_FACE);
+        glBindVertexArray(0);
+        glBindSampler(0, 0);
+        glBindTextureUnit(0, 0);
     }
 
     @Override
@@ -372,6 +426,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         this.distanceCountBuffer.free();
         this.translucentTerrainShader.free();
         this.terrainShader.free();
+        this.shadowTerrainShader.free();
         this.commandGenShader.free();
         this.cullShader.free();
         this.prepShader.free();

@@ -7,6 +7,7 @@ import me.cortex.voxy.client.core.model.ModelBakerySubsystem;
 import me.cortex.voxy.common.thread.Service;
 import me.cortex.voxy.common.thread.ServiceManager;
 import me.cortex.voxy.common.util.Pair;
+import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.world.WorldEngine;
 import me.cortex.voxy.common.world.WorldSection;
 import me.cortex.voxy.common.world.other.Mapper;
@@ -241,6 +242,26 @@ public class RenderGenerationService {
                     }
 
                     task.addin = WorldEngine.getLevel(task.position)>2?1:0;//Single time addin which gives the models time to bake before the task executes
+                }
+
+                // Give up after too many attempts on THIS task - submit empty result to unblock node processing
+                // This handles permanently broken blocks (missing models, broken textures, etc.)
+                if (task.attempts > 100) {
+                    Logger.warn("Giving up on section mesh after " + task.attempts + " attempts at pos " +
+                        WorldEngine.pprintPos(task.position) + " - submitting empty mesh");
+                    if (this.resultConsumer != null) {
+                        this.resultConsumer.accept(BuiltSection.emptyWithChildren(task.position, section.getNonEmptyChildren()));
+                    }
+                    // Remove task from map since we're not re-queuing
+                    long stamp2 = this.taskMapLock.writeLock();
+                    this.taskMap.remove(task.position);
+                    this.taskMapLock.unlockWrite(stamp2);
+                    // Clean up section
+                    if (task.section != null) {
+                        this.holdingSectionCount.decrementAndGet();
+                    }
+                    section.release();
+                    return;
                 }
 
                 //Keep the lock on the section, and attach it to the task, this prevents needing to re-aquire it later

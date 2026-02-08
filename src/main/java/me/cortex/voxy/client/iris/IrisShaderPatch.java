@@ -26,8 +26,26 @@ import static org.lwjgl.opengl.GL33.*;
 public class IrisShaderPatch {
     public static final int VERSION = ((IntSupplier)()->1).getAsInt();
 
-    public static final boolean IMPERSONATE_DISTANT_HORIZONS = System.getProperty("voxy.impersonateDHShader", "false").equalsIgnoreCase("true");
+    private static final String IMPERSONATE_DH_PROPERTY = "voxy.impersonateDHShader";
+    private static final boolean IMPERSONATE_DH_PROPERTY_SET = System.getProperty(IMPERSONATE_DH_PROPERTY) != null;
+    private static volatile boolean impersonateDistantHorizons =
+            System.getProperty(IMPERSONATE_DH_PROPERTY, "false").equalsIgnoreCase("true");
 
+    public static boolean shouldImpersonateDistantHorizons() {
+        return impersonateDistantHorizons;
+    }
+
+    public static void enableDistantHorizonsImpersonation() {
+        if (!IMPERSONATE_DH_PROPERTY_SET) {
+            impersonateDistantHorizons = true;
+        }
+    }
+
+    public enum CompatibilityMode {
+        VOXY_PATCH,
+        DH_NATIVE_CANDIDATE,
+        FALLBACK
+    }
 
     private static final class SSBODeserializer implements JsonDeserializer<Int2ObjectOpenHashMap<String>> {
         @Override
@@ -214,15 +232,22 @@ public class IrisShaderPatch {
     private final PatchGson patchData;
     private final ShaderPack pack;
     private final Int2ObjectMap<String> ssbos;
-    private IrisShaderPatch(PatchGson patchData, ShaderPack pack) {
+    private final CompatibilityMode compatibilityMode;
+
+    private IrisShaderPatch(PatchGson patchData, ShaderPack pack, CompatibilityMode compatibilityMode) {
         this.patchData = patchData;
         this.pack = pack;
+        this.compatibilityMode = compatibilityMode;
 
         if (patchData.ssbos == null) {
             this.ssbos = new Int2ObjectOpenHashMap<>();
         } else {
             this.ssbos = patchData.ssbos;
         }
+    }
+
+    public CompatibilityMode getCompatibilityMode() {
+        return this.compatibilityMode;
     }
 
     public boolean useViewportDims() {
@@ -338,12 +363,19 @@ public class IrisShaderPatch {
         patchData.translucentDrawBuffers = translucentBuffers;
         patchData.uniforms = new String[0];
         patchData.samplers = new Object2ObjectLinkedOpenHashMap<>();
-        patchData.opaquePatchData = buildFallbackPatch(opaqueBuffers.length);
-        patchData.translucentPatchData = buildFallbackPatch(translucentBuffers.length);
+        patchData.opaquePatchData = buildFallbackPatch(opaqueBuffers);
+        patchData.translucentPatchData = buildFallbackPatch(translucentBuffers);
         patchData.excludeLodsFromVanillaDepth = false;
         patchData.useViewportDims = true;
 
-        return new IrisShaderPatch(patchData, pack);
+        CompatibilityMode mode = hasDhPrograms(programSet) ? CompatibilityMode.DH_NATIVE_CANDIDATE : CompatibilityMode.FALLBACK;
+        return new IrisShaderPatch(patchData, pack, mode);
+    }
+
+    private static boolean hasDhPrograms(ProgramSet programSet) {
+        return programSet.get(ProgramId.DhTerrain).isPresent()
+                || programSet.get(ProgramId.DhWater).isPresent()
+                || programSet.get(ProgramId.DhShadow).isPresent();
     }
 
     private static int[] resolveDrawBuffers(ProgramSet programSet, ProgramId... ids) {
@@ -361,8 +393,48 @@ public class IrisShaderPatch {
         return new int[]{0};
     }
 
-    private static String buildFallbackPatch(int outputCount) {
-        int outputs = Math.max(1, outputCount);
+    private static int findBufferSlot(int[] buffers, int bufferId) {
+        if (buffers == null) {
+            return -1;
+        }
+        for (int i = 0; i < buffers.length; i++) {
+            if (buffers[i] == bufferId) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static String buildFallbackPatch(int[] drawBuffers) {
+        int outputs = Math.max(1, drawBuffers == null ? 1 : drawBuffers.length);
+
+        // Heuristics for common shader-pack layouts:
+        // - Color usually lands in colortex0.
+        // - Some packs (e.g. Complementary) route material/light data to colortex6, not normals.
+        // - Normals commonly land in colortex4 (Complementary) or colortex1 (classic).
+        int colorSlot = findBufferSlot(drawBuffers, 0);
+        if (colorSlot < 0) {
+            colorSlot = 0;
+        }
+        int normalSlot = findBufferSlot(drawBuffers, 4);
+        if (normalSlot < 0) {
+            normalSlot = findBufferSlot(drawBuffers, 1);
+        }
+        if (normalSlot < 0) {
+            normalSlot = findBufferSlot(drawBuffers, 2);
+        }
+
+        int lightSlot = findBufferSlot(drawBuffers, 6);
+        if (lightSlot < 0) {
+            lightSlot = findBufferSlot(drawBuffers, 2);
+        }
+        if (lightSlot < 0) {
+            lightSlot = findBufferSlot(drawBuffers, 1);
+        }
+        if (lightSlot == normalSlot || lightSlot == colorSlot) {
+            lightSlot = -1;
+        }
+
         StringBuilder builder = new StringBuilder();
 
         for (int i = 0; i < outputs; i++) {
@@ -402,18 +474,28 @@ public class IrisShaderPatch {
                 .append("    }\n")
                 .append("    colour.rgb *= light.rgb * faceTint;\n")
                 .append("    colour = colour + vec4(0,0,0,float(interData.w&0xFFu)/255);\n\n");
+        builder.append("#ifndef TRANSLUCENT\n")
+                .append("    colour.a = 1.0;\n")
+                .append("#endif\n\n");
 
-        // Output routing:
-        // - outColour0: shaded color (keeps block light working even in fallback mode)
-        // - outColour1: encoded normal (common shader-pack convention; avoids writing garbage into normal buffers)
-        // - other outputs: neutral
-        builder.append("    outColour0 = colour;\n");
-        if (outputs > 1) {
-            builder.append("    vec3 n = vec3(uint((parameters.face>>1u)==2u), uint((parameters.face>>1u)==0u), uint((parameters.face>>1u)==1u)) * (float(int(parameters.face)&1)*2-1);\n");
-            builder.append("    outColour1 = vec4(n*0.5+0.5, 1.0);\n");
-        }
-        for (int i = 2; i < outputs; i++) {
+        // Default everything to neutral to avoid polluting unrelated G-buffer targets.
+        for (int i = 0; i < outputs; i++) {
             builder.append("    outColour").append(i).append(" = vec4(0.0);\n");
+        }
+
+        // Always write shaded color somewhere sensible.
+        builder.append("    outColour").append(colorSlot).append(" = colour;\n");
+
+        // If the pack uses colortex6 for material/light data, provide a basic payload instead of mistakenly writing
+        // normals into it (which can cause screen-space artifacts).
+        if (lightSlot >= 0 && lightSlot < outputs) {
+            builder.append("    outColour").append(lightSlot).append(" = vec4(0.0, 0.0, parameters.lightMap.y, parameters.lightMap.x + clamp(colour.a, 0.0, 1.0));\n");
+        }
+
+        // Write normals only when we have a likely normal target.
+        if (normalSlot >= 0 && normalSlot < outputs) {
+            builder.append("    vec3 n = vec3(uint((parameters.face>>1u)==2u), uint((parameters.face>>1u)==0u), uint((parameters.face>>1u)==1u)) * (float(int(parameters.face)&1)*2-1);\n");
+            builder.append("    outColour").append(normalSlot).append(" = vec4(n*0.5+0.5, 1.0);\n");
         }
 
         builder.append("}\n");
@@ -493,6 +575,6 @@ public class IrisShaderPatch {
             Logger.error("Shader has voxy patch data, but patch version is incorrect. expected " + VERSION + " got "+patchData.version);
             throw new IllegalStateException("Shader version mismatch expected " + VERSION + " got "+patchData.version);
         }
-        return new IrisShaderPatch(patchData, ipack);
+        return new IrisShaderPatch(patchData, ipack, CompatibilityMode.VOXY_PATCH);
     }
 }

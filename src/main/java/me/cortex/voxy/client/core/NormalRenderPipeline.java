@@ -47,7 +47,7 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
 
     protected NormalRenderPipeline(AsyncNodeManager nodeManager, NodeCleaner nodeCleaner, HierarchicalOcclusionTraverser traversal, BooleanSupplier frexSupplier) {
         super(nodeManager, nodeCleaner, traversal, frexSupplier, false);
-        this.useEnvFog = VoxyConfig.CONFIG.useEnvironmentalFog;
+        this.useEnvFog = VoxyConfig.CONFIG.useEnvironmentalFog();
         this.finalBlit = new FullscreenBlit("voxy:post/blit_texture_depth_cutout.frag",
                 a->a.defineIf("USE_ENV_FOG", this.useEnvFog).define("EMIT_COLOUR"));
     }
@@ -99,6 +99,11 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
         glDispatchCompute((viewport.width+31)/32, (viewport.height+31)/32, 1);
 
         glBindFramebuffer(GL_FRAMEBUFFER, this.fbSSAO.id);
+    }
+
+    @Override
+    protected boolean shouldRenderTemporal(Viewport<?> viewport) {
+        return false;
     }
 
     @Override

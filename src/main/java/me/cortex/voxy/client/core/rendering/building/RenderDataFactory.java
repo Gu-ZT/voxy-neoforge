@@ -1,5 +1,6 @@
 package me.cortex.voxy.client.core.rendering.building;
 
+import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import me.cortex.voxy.client.core.model.IdNotYetComputedException;
 import me.cortex.voxy.client.core.model.ModelFactory;
 import me.cortex.voxy.client.core.model.ModelQueries;
@@ -31,6 +32,8 @@ public class RenderDataFactory {
     // since fluid states are explicitly overlays over the base block
     // can do funny stuff like double rendering
 
+    // Track block IDs that have been logged as missing to avoid log spam
+    private static final IntOpenHashSet LOGGED_MISSING_BLOCKS = new IntOpenHashSet();
 
     private final WorldEngine world;
     private final ModelFactory modelMan;
@@ -189,6 +192,36 @@ public class RenderDataFactory {
         this.modelMan = modelManager;
     }
 
+    /**
+     * Safely get model ID for a block, returning 0 (air) if model is not available.
+     * This prevents exceptions from missing neighbor models from failing entire sections.
+     */
+    private int getModelIdSafe(int blockId) {
+        if (blockId == 0) return 0;
+        if (!this.modelMan.hasModelForBlockId(blockId)) {
+            if (LOGGED_MISSING_BLOCKS.add(blockId)) {
+                Logger.warn("Missing model for neighbor block ID " + blockId + " - treating as air");
+            }
+            return 0;
+        }
+        return this.modelMan.getModelId(blockId);
+    }
+
+    /**
+     * Safely get fluid client state ID, returning the original model ID if fluid state is not available.
+     * This prevents exceptions from missing fluid models from failing entire sections.
+     */
+    private int getFluidClientStateIdSafe(int clientBlockStateId) {
+        try {
+            return this.modelMan.getFluidClientStateId(clientBlockStateId);
+        } catch (IdNotYetComputedException e) {
+            if (LOGGED_MISSING_BLOCKS.add(clientBlockStateId | (1 << 30))) { // Use high bit to distinguish from block IDs
+                Logger.warn("Missing fluid state for client model ID " + clientBlockStateId + " - skipping fluid rendering");
+            }
+            return clientBlockStateId; // Return original model ID as fallback
+        }
+    }
+
     private static long getQuadTyping(long metadata) {//2 bits
         int type = 0;
         {
@@ -229,20 +262,30 @@ public class RenderDataFactory {
                 sectionData[i * 2] = (block&(0xFFL<<56))>>>1;
                 sectionData[i * 2 + 1] = 0;
             } else {
-                int modelId = rawModelIds[Mapper.getBlockId(block)];
-                if (modelId == -1) {//Failed, so just return error
-                    return Mapper.getBlockId(block)|(1<<31);
+                int blockId = Mapper.getBlockId(block);
+                int modelId = rawModelIds[blockId];
+                if (modelId == -1) {
+                    // Model not available - treat as air to avoid gaps in LOD
+                    // Log warning once per block type
+                    if (LOGGED_MISSING_BLOCKS.add(blockId)) {
+                        Logger.warn("Missing model for block ID " + blockId + " - rendering as air in LOD");
+                    }
+                    // Treat as air: just lighting data, no model, no masks
+                    // NOTE: Do NOT use continue here - must allow mask update logic to run
+                    sectionData[i * 2] = (block&(0xFFL<<56))>>>1;
+                    sectionData[i * 2 + 1] = 0;
+                } else {
+                    long modelMetadata = this.modelMan.getModelMetadataFromClientId(modelId);
+
+                    sectionData[i * 2] = packPartialQuadData(modelId, block, modelMetadata);
+                    sectionData[i * 2 + 1] = modelMetadata;
+
+                    long msk = 1L << (i & 63);
+                    opaque |= ModelQueries.isFullyOpaque(modelMetadata) ? msk : 0;
+                    notEmpty |= modelId != 0 ? msk : 0;
+                    pureFluid |= ModelQueries.isFluid(modelMetadata) ? msk : 0;
+                    partialFluid |= ModelQueries.containsFluid(modelMetadata) ? msk : 0;
                 }
-                long modelMetadata = this.modelMan.getModelMetadataFromClientId(modelId);
-
-                sectionData[i * 2] = packPartialQuadData(modelId, block, modelMetadata);
-                sectionData[i * 2 + 1] = modelMetadata;
-
-                long msk = 1L << (i & 63);
-                opaque |= ModelQueries.isFullyOpaque(modelMetadata) ? msk : 0;
-                notEmpty |= modelId != 0 ? msk : 0;
-                pureFluid |= ModelQueries.isFluid(modelMetadata) ? msk : 0;
-                partialFluid |= ModelQueries.containsFluid(modelMetadata) ? msk : 0;
             }
 
             //Do increment here
@@ -466,7 +509,7 @@ public class RenderDataFactory {
 
                         int nib = Mapper.getBlockId(neighborId);
                         if (nib != 0) {//Not air
-                            int cid = this.modelMan.getModelId(nib);
+                            int cid = this.getModelIdSafe(nib);
                             long meta = this.modelMan.getModelMetadataFromClientId(cid);
                             if (ModelQueries.isFullyOpaque(meta)) {//Dont mesh this face
                                 this.blockMesher.skip(1);
@@ -559,7 +602,7 @@ public class RenderDataFactory {
                         if (ModelQueries.containsFluid(Am)) {
                             int modelId = (int) ((A>>26)&0xFFFF);
                             A &= ~(0xFFFFL<<26);
-                            int fluidId = this.modelMan.getFluidClientStateId(modelId);
+                            int fluidId = this.getFluidClientStateIdSafe(modelId);
                             A |= Integer.toUnsignedLong(fluidId)<<26;
                             Am = this.modelMan.getModelMetadataFromClientId(fluidId);
 
@@ -624,7 +667,7 @@ public class RenderDataFactory {
                         if (ModelQueries.containsFluid(B)) {
                             int modelId = (int) ((A>>26)&0xFFFF);
                             A &= ~(0xFFFFL<<26);
-                            int fluidId = this.modelMan.getFluidClientStateId(modelId);
+                            int fluidId = this.getFluidClientStateIdSafe(modelId);
                             A |= Integer.toUnsignedLong(fluidId)<<26;
                             B = this.modelMan.getModelMetadataFromClientId(fluidId);
 
@@ -634,10 +677,10 @@ public class RenderDataFactory {
 
                         //Check and test if can cull W.R.T neighbor
                         if (Mapper.getBlockId(neighborId) != 0) {//Not air
-                            int modelId = this.modelMan.getModelId(Mapper.getBlockId(neighborId));
+                            int modelId = this.getModelIdSafe(Mapper.getBlockId(neighborId));
                             long meta = this.modelMan.getModelMetadataFromClientId(modelId);
                             if (ModelQueries.containsFluid(meta)) {
-                                modelId = this.modelMan.getFluidClientStateId(modelId);
+                                modelId = this.getFluidClientStateIdSafe(modelId);
                             }
                             if (ModelQueries.cullsSame(B)) {
                                 if (modelId == ((A>>26)&0xFFFF)) {
@@ -767,7 +810,7 @@ public class RenderDataFactory {
                         boolean fail = false;
                         //Check and test if can cull W.R.T neighbor
                         if (Mapper.getBlockId(neighborId) != 0) {//Not air
-                            int modelId = this.modelMan.getModelId(Mapper.getBlockId(neighborId));
+                            int modelId = this.getModelIdSafe(Mapper.getBlockId(neighborId));
 
 
                             if (ModelQueries.cullsSame(B) && modelId == ((A>>26)&0xFFFF)) {//TODO: FIXME, this technically isnt correct as need to check self occulsion, thinks?
@@ -1014,7 +1057,7 @@ public class RenderDataFactory {
                     long neighborId = this.neighboringFaces[i];
                     boolean oki = true;
                     if (Mapper.getBlockId(neighborId) != 0) {//Not air
-                        long meta = this.modelMan.getModelMetadataFromClientId(this.modelMan.getModelId(Mapper.getBlockId(neighborId)));
+                        long meta = this.modelMan.getModelMetadataFromClientId(this.getModelIdSafe(Mapper.getBlockId(neighborId)));
                         if (ModelQueries.isFullyOpaque(meta)) {
                             oki = false;
                         } else if (CHECK_NEIGHBOR_FACE_OCCLUSION && ModelQueries.faceOccludes(meta, (2 << 1) | (1 - 1))) {
@@ -1036,7 +1079,7 @@ public class RenderDataFactory {
                     long neighborId = this.neighboringFaces[i+32*32];
                     boolean oki = true;
                     if (Mapper.getBlockId(neighborId) != 0) {//Not air
-                        long meta = this.modelMan.getModelMetadataFromClientId(this.modelMan.getModelId(Mapper.getBlockId(neighborId)));
+                        long meta = this.modelMan.getModelMetadataFromClientId(this.getModelIdSafe(Mapper.getBlockId(neighborId)));
                         if (ModelQueries.isFullyOpaque(meta)) {
                             oki = false;
                         } else if (CHECK_NEIGHBOR_FACE_OCCLUSION && ModelQueries.faceOccludes(meta, (2 << 1) | (1 - 0))) {
@@ -1159,7 +1202,7 @@ public class RenderDataFactory {
                         if (ModelQueries.containsFluid(Am)) {
                             int modelId = (int) ((A>>26)&0xFFFF);
                             A &= ~(0xFFFFL<<26);
-                            int fluidId = this.modelMan.getFluidClientStateId(modelId);
+                            int fluidId = this.getFluidClientStateIdSafe(modelId);
                             A |= Integer.toUnsignedLong(fluidId)<<26;
                             Am = this.modelMan.getModelMetadataFromClientId(fluidId);
 
@@ -1232,7 +1275,7 @@ public class RenderDataFactory {
                     if (ModelQueries.containsFluid(Am)) {
                         int modelId = (int) ((A>>26)&0xFFFF);
                         A &= ~(0xFFFFL<<26);
-                        int fluidId = this.modelMan.getFluidClientStateId(modelId);
+                        int fluidId = this.getFluidClientStateIdSafe(modelId);
                         A |= Integer.toUnsignedLong(fluidId)<<26;
                         Am = this.modelMan.getModelMetadataFromClientId(fluidId);
 
@@ -1243,7 +1286,7 @@ public class RenderDataFactory {
 
                     if (Mapper.getBlockId(neighborId) != 0) {//Not air
 
-                        int modelId = this.modelMan.getModelId(Mapper.getBlockId(neighborId));
+                        int modelId = this.getModelIdSafe(Mapper.getBlockId(neighborId));
                         long meta = this.modelMan.getModelMetadataFromClientId(modelId);
                         if (ModelQueries.isFullyOpaque(meta)) {
                             oki = false;
@@ -1257,7 +1300,7 @@ public class RenderDataFactory {
                         }
 
                         if (ModelQueries.containsFluid(meta)) {
-                            modelId = this.modelMan.getFluidClientStateId(modelId);
+                            modelId = this.getFluidClientStateIdSafe(modelId);
                         }
 
                         if (ModelQueries.cullsSame(Am)) {
@@ -1296,7 +1339,7 @@ public class RenderDataFactory {
                     if (ModelQueries.containsFluid(Am)) {
                         int modelId = (int) ((A>>26)&0xFFFF);
                         A &= ~(0xFFFFL<<26);
-                        int fluidId = this.modelMan.getFluidClientStateId(modelId);
+                        int fluidId = this.getFluidClientStateIdSafe(modelId);
                         A |= Integer.toUnsignedLong(fluidId)<<26;
                         Am = this.modelMan.getModelMetadataFromClientId(fluidId);
                     }
@@ -1304,7 +1347,7 @@ public class RenderDataFactory {
 
 
                     if (Mapper.getBlockId(neighborId) != 0) {//Not air
-                        int modelId = this.modelMan.getModelId(Mapper.getBlockId(neighborId));
+                        int modelId = this.getModelIdSafe(Mapper.getBlockId(neighborId));
                         long meta = this.modelMan.getModelMetadataFromClientId(modelId);
                         if (ModelQueries.isFullyOpaque(meta)) {
                             oki = false;
@@ -1318,7 +1361,7 @@ public class RenderDataFactory {
                         }
 
                         if (ModelQueries.containsFluid(meta)) {
-                            modelId = this.modelMan.getFluidClientStateId(modelId);
+                            modelId = this.getFluidClientStateIdSafe(modelId);
                         }
 
                         if (ModelQueries.cullsSame(Am)) {
@@ -1506,7 +1549,7 @@ public class RenderDataFactory {
                     int modelId = 0;
                     long nM = 0;
                     if (Mapper.getBlockId(neighborId) != 0) {//Not air
-                        modelId = this.modelMan.getModelId(Mapper.getBlockId(neighborId));
+                        modelId = this.getModelIdSafe(Mapper.getBlockId(neighborId));
                         nM = this.modelMan.getModelMetadataFromClientId(modelId);
                     }
 
@@ -1528,7 +1571,7 @@ public class RenderDataFactory {
                     int modelId = 0;
                     long nM = 0;
                     if (Mapper.getBlockId(neighborId) != 0) {//Not air
-                        modelId = this.modelMan.getModelId(Mapper.getBlockId(neighborId));
+                        modelId = this.getModelIdSafe(Mapper.getBlockId(neighborId));
                         nM = this.modelMan.getModelMetadataFromClientId(modelId);
                     }
 

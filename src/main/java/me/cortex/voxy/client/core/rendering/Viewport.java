@@ -100,6 +100,10 @@ public abstract class Viewport <A extends Viewport<A>> {
     */
 
     public A update() {
+        return this.update(true);
+    }
+
+    public A update(boolean updateDepthBoundingBuffer) {
         //MVP
         this.projection.mul(this.modelView, this.MVP);
 
@@ -117,8 +121,10 @@ public abstract class Viewport <A extends Viewport<A>> {
                 (float) (this.cameraY-(sy<<5)),
                 (float) (this.cameraZ-(sz<<5)));
 
-        if (this.depthBoundingBuffer.resize(this.width, this.height)) {
-            this.depthBoundingBuffer.clear(0.0f);
+        if (updateDepthBoundingBuffer && this.width > 0 && this.height > 0) {
+            if (this.depthBoundingBuffer.resize(this.width, this.height)) {
+                this.depthBoundingBuffer.clear(0.0f);
+            }
         }
 
         return (A) this;

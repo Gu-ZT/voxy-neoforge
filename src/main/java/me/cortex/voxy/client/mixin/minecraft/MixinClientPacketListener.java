@@ -16,7 +16,7 @@ public class MixinClientPacketListener {
     private void voxy$init(ClientboundLoginPacket packet, CallbackInfo ci) {
         if (VoxyCommon.isAvailable() && !VoxyClientInstance.isInGame) {
             VoxyClientInstance.isInGame = true;
-            if (VoxyConfig.CONFIG.enabled) {
+            if (VoxyConfig.CONFIG.isEnabled()) {
                 if (VoxyCommon.getInstance() != null) {
                     VoxyCommon.shutdownInstance();
                 }
