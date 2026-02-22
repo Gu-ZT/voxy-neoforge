@@ -244,19 +244,16 @@ public class RenderGenerationService {
                     task.addin = WorldEngine.getLevel(task.position)>2?1:0;//Single time addin which gives the models time to bake before the task executes
                 }
 
-                // Give up after too many attempts on THIS task - submit empty result to unblock node processing
-                // This handles permanently broken blocks (missing models, broken textures, etc.)
-                if (task.attempts > 100) {
+                // Give up after too many attempts on THIS task - submit empty result to unblock node processing.
+                // The task was already removed from taskMap at the top of processJob, so we just
+                // submit the empty result and return. Children are preserved so the subtree is still traversed.
+                // 300 attempts gives large modpacks (5000+ block states) time to finish baking before giving up.
+                if (task.attempts > 300) {
                     Logger.warn("Giving up on section mesh after " + task.attempts + " attempts at pos " +
                         WorldEngine.pprintPos(task.position) + " - submitting empty mesh");
                     if (this.resultConsumer != null) {
                         this.resultConsumer.accept(BuiltSection.emptyWithChildren(task.position, section.getNonEmptyChildren()));
                     }
-                    // Remove task from map since we're not re-queuing
-                    long stamp2 = this.taskMapLock.writeLock();
-                    this.taskMap.remove(task.position);
-                    this.taskMapLock.unlockWrite(stamp2);
-                    // Clean up section
                     if (task.section != null) {
                         this.holdingSectionCount.decrementAndGet();
                     }

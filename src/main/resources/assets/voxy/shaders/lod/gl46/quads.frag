@@ -139,6 +139,21 @@ void main() {
         vec2 uvSmol = uv*(1.0/(vec2(3.0,2.0)*256.0));
         vec2 dx = dFdx(uvSmol);//vec2(lDx, dDx);
         vec2 dy = dFdy(uvSmol);//vec2(lDy, dDy);
+        #ifndef PATCHED_SHADER
+        // Apply a per-LOD mip bias to suppress Moiré shimmer on distant LODs.
+        // interData.w bits [3..5] hold the LOD level (encoded as lodLevel<<3 in makeRemainingAttributes).
+        // Scaling the derivatives by 2^(lodLevel*0.5) is exactly equivalent to adding (lodLevel*0.5)
+        // to the GPU's λ (mip level), since: λ = log2(max(|dPdx|,|dPdy|)*texSize), and
+        // log2(k * grad) = log2(k) + log2(grad). See OpenGL spec §8.14.1.
+        // Note: for translucent geometry, addin=0 so lodBits will be 0 — bias is a no-op there.
+        // exp2() is the GLSL built-in for 2^x, faster than pow(2.0, x) on most drivers.
+        {
+            uint lodBits = (interData.w >> 3u) & 7u;
+            float mipBiasScale = exp2(float(lodBits) * 0.5);
+            dx *= mipBiasScale;
+            dy *= mipBiasScale;
+        }
+        #endif
         colour = textureGrad(blockModelAtlas, texPos, dx, dy);
     }// else {
     //    colour = textureLod(blockModelAtlas, texPos, 0);

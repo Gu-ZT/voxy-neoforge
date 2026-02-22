@@ -166,10 +166,26 @@ public class HierarchicalOcclusionTraverser {
         nglClearNamedBufferSubData(this.topNodeIds.id, GL_R32UI, idx*4L, 4, GL_RED_INTEGER, GL_UNSIGNED_INT, SCRATCH);
     }
 
+    // CameraOverhaul applies a Z-roll to the PoseStack after LevelRenderer.renderLevel starts,
+    // so the frustumMatrix Voxy captures has no roll component. At peak strafing roll (~10 deg)
+    // the rendered view extends ~10 deg beyond the captured frustum at the screen edges, causing
+    // LOD pop-in. We compensate by expanding each frustum plane outward by a small world-space
+    // margin. The planes from FrustumIntersection (allowTestSpheres=false) are unnormalized, so
+    // we normalize before applying the bias. 16 blocks covers the roll arc at close-LOD distances;
+    // increase if pop-in returns at very high FOV or with CameraOverhaul intensity cranked up.
+    private static final float FRUSTUM_MARGIN_BLOCKS = 16.0f;
+
     private static void setFrustum(Viewport<?> viewport, long ptr) {
         for (int i = 0; i < 6; i++) {
             var plane = viewport.frustumPlanes[i];
-            plane.getToAddress(ptr); ptr += 4*4;
+            float nx = plane.x, ny = plane.y, nz = plane.z, nw = plane.w;
+            float len = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
+            if (len > 1e-6f) { nx /= len; ny /= len; nz /= len; nw /= len; }
+            nw += FRUSTUM_MARGIN_BLOCKS;
+            MemoryUtil.memPutFloat(ptr, nx); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, ny); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, nz); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, nw); ptr += 4;
         }
     }
 

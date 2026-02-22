@@ -55,7 +55,10 @@ public class ModelBakerySubsystem {
                 do {
                     this.factory.addEntry(i);
                     j++;
-                    if (4<j&&(totalBudget<(System.nanoTime() - start)+50_000))//20<j||
+                    // Process at least 16 blocks per tick unconditionally, then respect budget.
+                    // 50_000ns (50µs) of lookahead prevents stopping right at the budget boundary.
+                    // Higher minimum reduces startup time for large modpacks (was 4, now 16).
+                    if (16 < j && (totalBudget < (System.nanoTime() - start) + 50_000))
                         break;
                     i = this.blockIdQueue.poll();
                 } while (i != null);
@@ -88,9 +91,25 @@ public class ModelBakerySubsystem {
             Logger.error("Error, got bakeing request for out of range state id. StateId: " + blockId + " max id: " + this.mapper.getBlockStateCount(), new Exception());
             return;
         }
+        // Fast path: already baked
+        if (this.factory.hasModelForBlockId(blockId)) {
+            return;
+        }
         this.seenIdsLock.lock();
-        if (!this.seenIds.add(blockId)) {
-            this.seenIdsLock.unlock();
+        boolean isNew = this.seenIds.add(blockId);
+        if (!isNew) {
+            // Was seen before. If the model still hasn't been baked (idMappings == -1),
+            // the previous bake was either deferred (fluid dependency not ready) or stuck.
+            // Re-queue via addEntry which will handle dedup via blockStatesInFlight.
+            // We only do this once by removing from seenIds so the next call can re-add it.
+            if (!this.factory.hasModelForBlockId(blockId)) {
+                this.seenIds.remove(blockId); // Allow future re-queue if needed
+                this.seenIdsLock.unlock();
+                this.blockIdQueue.add(blockId);
+                this.blockIdCount.incrementAndGet();
+            } else {
+                this.seenIdsLock.unlock();
+            }
             return;
         }
         this.seenIdsLock.unlock();

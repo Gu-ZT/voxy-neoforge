@@ -12,6 +12,7 @@ import me.cortex.voxy.client.core.rendering.post.FullscreenBlit;
 import me.cortex.voxy.client.core.rendering.section.backend.AbstractSectionRenderer;
 import me.cortex.voxy.client.core.rendering.util.DepthFramebuffer;
 import me.cortex.voxy.client.core.rendering.util.DownloadStream;
+import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.util.TrackedObject;
 import org.joml.Matrix4f;
 import org.lwjgl.opengl.GL30;
@@ -171,19 +172,32 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         glStencilFunc(GL_EQUAL, 1, 0xFF);
     }
 
+    private static boolean depthTexDiagLogged = false;
     private static int getDepthAttachmentTextureId(int framebuffer) {
         // Iris / MC can attach depth as GL_DEPTH_STENCIL_ATTACHMENT. Query both to be robust.
         int depthTexture = glGetNamedFramebufferAttachmentParameteri(framebuffer, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME);
         if (depthTexture != 0) {
+            if (!depthTexDiagLogged) {
+                depthTexDiagLogged = true;
+                Logger.info("[DIAG] getDepthAttachmentTextureId(fb=" + framebuffer + ") → depthTex=" + depthTexture + " (via GL_DEPTH_ATTACHMENT)");
+            }
             return depthTexture;
         }
 
         depthTexture = glGetNamedFramebufferAttachmentParameteri(framebuffer, GL_DEPTH_STENCIL_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME);
         if (depthTexture != 0) {
+            if (!depthTexDiagLogged) {
+                depthTexDiagLogged = true;
+                Logger.info("[DIAG] getDepthAttachmentTextureId(fb=" + framebuffer + ") → depthTex=" + depthTexture + " (via GL_DEPTH_STENCIL_ATTACHMENT)");
+            }
             return depthTexture;
         }
 
         // No depth attachment found; return 0 so subsequent GL errors are obvious in logs/debug output.
+        if (!depthTexDiagLogged) {
+            depthTexDiagLogged = true;
+            Logger.warn("[DIAG] getDepthAttachmentTextureId(fb=" + framebuffer + ") → 0 (no depth attachment found! LODs will be invisible)");
+        }
         return 0;
     }
 

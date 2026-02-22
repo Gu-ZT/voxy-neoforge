@@ -1,6 +1,5 @@
 package me.cortex.voxy.client.core.rendering.building;
 
-import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import me.cortex.voxy.client.core.model.IdNotYetComputedException;
 import me.cortex.voxy.client.core.model.ModelFactory;
 import me.cortex.voxy.client.core.model.ModelQueries;
@@ -32,8 +31,9 @@ public class RenderDataFactory {
     // since fluid states are explicitly overlays over the base block
     // can do funny stuff like double rendering
 
-    // Track block IDs that have been logged as missing to avoid log spam
-    private static final IntOpenHashSet LOGGED_MISSING_BLOCKS = new IntOpenHashSet();
+    // Track block IDs that have been logged as missing to avoid log spam.
+    // Must be thread-safe: accessed concurrently from multiple RenderDataFactory worker threads.
+    private static final java.util.Set<Integer> LOGGED_MISSING_BLOCKS = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     private final WorldEngine world;
     private final ModelFactory modelMan;
@@ -264,16 +264,8 @@ public class RenderDataFactory {
             } else {
                 int blockId = Mapper.getBlockId(block);
                 int modelId = rawModelIds[blockId];
-                if (modelId == -1) {
-                    // Model not available - treat as air to avoid gaps in LOD
-                    // Log warning once per block type
-                    if (LOGGED_MISSING_BLOCKS.add(blockId)) {
-                        Logger.warn("Missing model for block ID " + blockId + " - rendering as air in LOD");
-                    }
-                    // Treat as air: just lighting data, no model, no masks
-                    // NOTE: Do NOT use continue here - must allow mask update logic to run
-                    sectionData[i * 2] = (block&(0xFFL<<56))>>>1;
-                    sectionData[i * 2 + 1] = 0;
+                if (modelId == -1) {//Failed, so just return error
+                    return blockId|(1<<31);
                 } else {
                     long modelMetadata = this.modelMan.getModelMetadataFromClientId(modelId);
 

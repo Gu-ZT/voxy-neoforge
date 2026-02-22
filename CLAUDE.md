@@ -84,6 +84,24 @@ Before modifying any file:
 4. **Test build** after every significant change
 5. **Document fixes** with evidence from reference sources
 
+## Remote Testing Infrastructure
+
+### SSH Access to Windows Gaming Laptop (Prism Launcher)
+
+SSH host: `shelfwood@192.168.178.206`
+
+Scripts in `./scripts/`:
+- `./scripts/logs.sh [instance] [latest|crash|debug|list]` — fetch logs from instance
+- `./scripts/deploy.sh [instance]` — deploy built JAR to instance mods folder
+- `./scripts/list_instances.sh` — list available Prism Launcher instances
+
+Available instances: `1.21.1`, `Craftoria`, `Homestead - A Cozy Survival Experience`, `Packje 1.0.1`, `voxy`
+
+Default instance for deployment: `Craftoria` (large modpack, primary test target)
+
+Log paths on Windows:
+`C:\Users\shelfwood\AppData\Roaming\PrismLauncher\instances\<instance>\minecraft\logs\latest.log`
+
 ## Known Issues (NeoForge Port)
 
 Track porting-specific issues here. Pre-existing bugs in the original Fabric mod are out of scope.

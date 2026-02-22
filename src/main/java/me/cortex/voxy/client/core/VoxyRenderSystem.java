@@ -207,6 +207,10 @@ public class VoxyRenderSystem {
         int width = dims[2];
         int height = dims[3];
 
+        if ((width == 0 || height == 0) && setupViewportWarnCount++ < 3) {
+            Logger.warn("[DIAG] setupViewport: GL_VIEWPORT returned 0x0 (dims=" + dims[0] + "," + dims[1] + "," + dims[2] + "," + dims[3] + ") - LODs will not render this frame");
+        }
+
         {//Apply render scaling factor
             var factor = this.pipeline.getRenderScalingFactor();
             if (factor != null) {
@@ -349,12 +353,37 @@ public class VoxyRenderSystem {
         }
     }
 
+    private boolean renderOpaqueFirstCall = true;
+    private int setupViewportWarnCount = 0;
+
     public void renderOpaque(Viewport<?> viewport) {
         if (viewport == null) {
+            if (renderOpaqueFirstCall) {
+                renderOpaqueFirstCall = false;
+                Logger.warn("[DIAG] renderOpaque called with null viewport - rendering suppressed");
+            }
             return;
         }
-        if (IrisCompatManager.isShadowActive() && !RENDER_LODS_IN_IRIS_SHADOW_PASS) {
+        // Only skip the opaque pass when shadow is active AND we are using the IrisVoxyRenderPipeline,
+        // which has its own dedicated shadow render path (renderShadowPass).
+        // For NormalRenderPipeline, Embeddium's CUTOUT hook is the sole render entry point;
+        // blocking it here causes LODs to be completely invisible when Iris is loaded but
+        // the shader pack is not instrumented for Voxy (no voxy.json).
+        if (IrisCompatManager.isShadowActive() && !RENDER_LODS_IN_IRIS_SHADOW_PASS
+                && (this.pipeline instanceof IrisVoxyRenderPipeline)) {
             return;
+        }
+
+        if (renderOpaqueFirstCall) {
+            renderOpaqueFirstCall = false;
+            int[] dbgDims = new int[4];
+            glGetIntegerv(GL_VIEWPORT, dbgDims);
+            int dbgFB = GL11.glGetInteger(GL_DRAW_FRAMEBUFFER_BINDING);
+            Logger.info("[DIAG] renderOpaque first call: viewport=" + viewport.width + "x" + viewport.height
+                    + " GL_VIEWPORT=" + dbgDims[2] + "x" + dbgDims[3]
+                    + " boundFB=" + dbgFB
+                    + " shadowActive=" + IrisCompatManager.isShadowActive()
+                    + " pipeline=" + this.pipeline.getClass().getSimpleName());
         }
 
         // MC 1.21.1 NeoForge: Fog is handled by VoxyClientEvents.onRenderFog()
@@ -420,7 +449,7 @@ public class VoxyRenderSystem {
             while (this.renderDistanceTracker.setCenterAndProcess(viewport.cameraX, viewport.cameraZ) && VoxyClient.isFrexActive());//While FF is active, run until everything is processed
             TimingStatistics.H.start();
             //Done here as is allows less gl state resetup
-            do { this.modelService.tick(900_000); } while (VoxyClient.isFrexActive() && !this.modelService.areQueuesEmpty());
+            do { this.modelService.tick(2_000_000); } while (VoxyClient.isFrexActive() && !this.modelService.areQueuesEmpty());
             TimingStatistics.H.stop();
         }
         GPUTiming.INSTANCE.marker();
@@ -506,18 +535,30 @@ public class VoxyRenderSystem {
         }
     }
 
-    private static Matrix4f makeProjectionMatrix(float near, float far) {
-        //TODO: use the existing projection matrix use mulLocal by the inverse of the projection and then mulLocal our projection
+    /**
+     * Extract the actual vertical FOV (in radians) from a projection matrix.
+     * Handles FOV modifiers (potions, speed, zoom, etc.) that alter the actual frustum
+     * vs the raw slider value from options.fov().
+     * For a standard perspective matrix, m11 = 1/tan(fovY/2), so fovY = 2*atan(1/m11).
+     */
+    private static float extractFovFromProjection(Matrix4fc projection) {
+        // m11 = cot(fovY/2) = 1/tan(fovY/2) for a standard perspective matrix
+        float m11 = projection.m11();
+        if (m11 > 0.001f) {
+            return (float) (2.0 * Math.atan(1.0 / m11));
+        }
+        // Fallback to options value if matrix looks degenerate
+        float fovDeg = Minecraft.getInstance().options.fov().get().floatValue();
+        return fovDeg * 0.01745329238474369f;
+    }
 
+    private static Matrix4f makeProjectionMatrix(Matrix4fc baseProjection, float near, float far) {
         var projection = new Matrix4f();
         var client = Minecraft.getInstance();
-        var gameRenderer = client.gameRenderer;//tickCounter.getTickDelta(true);
-
-        // MC 1.21.1: getFov() became private, using options FOV value as fallback
-        // TODO: Consider using ViewportEvent.ComputeFov for accurate FOV with modifiers
-        float fov = client.options.fov().get().floatValue();
-
-        projection.setPerspective(fov * 0.01745329238474369f,
+        // Extract the actual FOV from the base projection matrix so we respect all FOV modifiers
+        // (potions, zoom, speed, etc.) rather than just the raw options slider value.
+        float fovY = extractFovFromProjection(baseProjection);
+        projection.setPerspective(fovY,
                 (float) client.getWindow().getWidth() / (float)client.getWindow().getHeight(),
                 near, far);
         return projection;
@@ -533,9 +574,9 @@ public class VoxyRenderSystem {
         float farVoxy = DHImpersonationSemantics.ENABLED ? DHImpersonationSemantics.getFarPlaneBlocks() : 16 * 3000;
 
         return base.mulLocal(
-                makeProjectionMatrix(0.05f, Minecraft.getInstance().gameRenderer.getDepthFar()).invert(),
+                makeProjectionMatrix(base, 0.05f, Minecraft.getInstance().gameRenderer.getDepthFar()).invert(),
                 new Matrix4f()
-        ).mulLocal(makeProjectionMatrix(nearVoxy, farVoxy));
+        ).mulLocal(makeProjectionMatrix(base, nearVoxy, farVoxy));
     }
 
     private boolean frexStillHasWork() {

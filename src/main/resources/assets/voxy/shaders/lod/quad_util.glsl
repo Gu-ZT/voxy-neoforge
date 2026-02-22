@@ -19,14 +19,11 @@ ivec3 extractLoDPosition(uvec2 encPos) {
 }
 
 vec4 getFaceSize(uint faceData) {
-    float EPSILON = 0.00005f;
-
     vec4 faceOffsetsSizes = extractFaceSizes(faceData);
 
-    //Expand the quads by a very small amount (because of the subtraction after this also becomes an implicit add)
-    faceOffsetsSizes.xz -= vec2(EPSILON);
-
     //Make the end relative to the start
+    // NOTE: EPSILON is intentionally NOT applied here. It is applied LOD-scale-aware in setupQuad()
+    // so that the world-space gap stays constant instead of growing 2^lodLevel times.
     faceOffsetsSizes.yw -= faceOffsetsSizes.xz;
 
     return faceOffsetsSizes;
@@ -144,6 +141,14 @@ void setupQuad(out QuadData quad, const in Quad rawQuad, uvec2 sPos, bool genera
     }
 
     vec4 faceSize = getFaceSize(faceData);
+    // Apply a LOD-invariant epsilon: constant ~0.00005 world-blocks regardless of LOD level.
+    // Without this correction the old constant model-space epsilon grew by lodScale (2^lodLevel),
+    // causing visible skybox-leaking gaps between LOD quad rows at LOD 4+.
+    {
+        float scaledEpsilon = 0.00005 / lodScale;
+        faceSize.xz -= vec2(scaledEpsilon); // shift start inward
+        faceSize.yw += vec2(scaledEpsilon); // keep relative size the same
+    }
     #ifdef USE_SINGLE_TRI
     faceSize *= 2;
     #endif

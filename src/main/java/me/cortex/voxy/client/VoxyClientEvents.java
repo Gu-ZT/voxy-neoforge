@@ -8,6 +8,7 @@ import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.ViewportEvent;
+import net.neoforged.neoforge.event.GameShuttingDownEvent;
 
 /**
  * Client event handlers for Voxy on NeoForge.
@@ -47,5 +48,15 @@ public class VoxyClientEvents {
             // MUST cancel for changes to take effect (per NeoForge docs)
             event.setCanceled(true);
         }
+    }
+
+    /**
+     * Save config when the game is shutting down.
+     * This ensures settings changed during the session are always persisted,
+     * not just when the user explicitly clicks Apply in the options screen.
+     */
+    @SubscribeEvent
+    public static void onGameShuttingDown(GameShuttingDownEvent event) {
+        VoxyNeoForgeConfig.save();
     }
 }

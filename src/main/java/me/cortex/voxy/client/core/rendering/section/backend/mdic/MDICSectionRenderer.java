@@ -164,12 +164,12 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         MemoryUtil.memPutInt(ptr, viewport.frameId&0x7fffffff); ptr += 4;
         viewport.innerTranslation.getToAddress(ptr); ptr += 4*3;
 
-        // Earth curvature radius: 0 = disabled, otherwise compute radius in blocks
-        // DH uses: radius = 6371000.0 / ratio (Earth radius in meters / ratio factor)
-        // We use blocks (1 block = 1 meter), so same formula
+        // Earth curvature radius: 0 = disabled, otherwise compute radius in blocks.
+        // radius = 6371000 / ratio  (Earth radius in meters divided by ratio factor).
+        // ratio=1 → real Earth (huge radius, barely perceptible), ratio=250 → extreme curvature.
         int earthCurveRatio = VoxyConfig.CONFIG.getEarthCurveRatio();
         float earthRadius = 0.0f;
-        if (earthCurveRatio >= 50) {
+        if (earthCurveRatio >= 1) {
             earthRadius = 6371000.0f / earthCurveRatio;
         }
         MemoryUtil.memPutFloat(ptr, earthRadius); ptr += 4;
@@ -237,9 +237,18 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         //RenderLayer.getCutoutMipped().endDrawing();
     }
 
+    private int renderOpaqueFrameCount = 0;
+    private int lastLoggedSectionCount = -1;
     @Override
     public void renderOpaque(MDICViewport viewport) {
-        if (this.geometryManager.getSectionCount() == 0) return;
+        renderOpaqueFrameCount++;
+        int sc = this.geometryManager.getSectionCount();
+        // Log on first call, then every 200 frames, and whenever sectionCount changes
+        if (renderOpaqueFrameCount == 1 || renderOpaqueFrameCount % 200 == 0 || sc != lastLoggedSectionCount) {
+            lastLoggedSectionCount = sc;
+            Logger.info("[DIAG] MDICSectionRenderer.renderOpaque frame=" + renderOpaqueFrameCount + " sectionCount=" + sc);
+        }
+        if (sc == 0) return;
 
         this.uploadUniformBuffer(viewport);
 

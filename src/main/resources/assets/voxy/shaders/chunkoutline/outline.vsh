@@ -4,7 +4,7 @@ layout(binding = 0, std140) uniform SceneUniform {
     mat4 MVP;
     ivec4 section;
     vec4 negInnerSec;
-    int boundaryBuffer;  // Configurable safety margin (0-4 blocks)
+    int boundaryBuffer;  // LOD overlap margin in chunks (0-4); each unit = 16 blocks inward bleed
 };
 
 layout(binding = 1, std430) restrict readonly buffer ChunkPosBuffer {
@@ -38,8 +38,10 @@ bool shouldRender(ivec3 icorner) {
 
     // MC Java Edition uses SQUARE render distance (chunk grid), not circular.
     // Chebyshev distance (max of abs) matches vanilla's square pattern.
-    // Shrink the threshold by buffer - uniform at all angles including diagonals.
-    float effectiveRange = negInnerSec.w - float(boundaryBuffer);
+    // boundaryBuffer is in CHUNKS (each = 16 blocks). Shrinking the threshold causes the
+    // depth mask to stop covering the outermost N chunks, letting LODs bleed inward by
+    // N*16 blocks - creating a meaningful overlap that hides the vanilla/LOD seam.
+    float effectiveRange = negInnerSec.w - float(boundaryBuffer) * 16.0;
     bool visible = max(abs(corner.x), abs(corner.z)) < effectiveRange;
     visible = visible && abs(corner.y) < effectiveRange;
     return visible;

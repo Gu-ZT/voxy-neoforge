@@ -234,6 +234,21 @@ public class ModelFactory {
     private boolean processModelResult() {
         var result = this.rawBakeResults.poll();
         if (result == null) return false;
+
+        // If this block has a fluid state dependency, check that the fluid is already baked
+        // before we free the rawData and process it. If not ready yet, push to back of deque
+        // for retry on the next processAllThings() call (avoids the fatal IllegalStateException).
+        boolean isFluid = result.blockState.getBlock() instanceof LiquidBlock;
+        if (!isFluid && !result.blockState.getFluidState().isEmpty()) {
+            var fluidLegacyBlock = result.blockState.getFluidState().createLegacyBlock();
+            int fluidStateId = this.mapper.getIdForBlockState(fluidLegacyBlock);
+            if (this.idMappings[fluidStateId] == -1) {
+                // Fluid not baked yet — defer this result
+                this.rawBakeResults.addLast(result);
+                return !this.rawBakeResults.isEmpty();
+            }
+        }
+
         ColourDepthTextureData[] textureData = new ColourDepthTextureData[6];
         {//Create texture data
             long ptr = result.rawData.address;

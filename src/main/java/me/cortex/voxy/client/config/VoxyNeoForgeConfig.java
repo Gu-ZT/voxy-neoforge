@@ -74,21 +74,23 @@ public class VoxyNeoForgeConfig {
 
     // LOD boundary buffer (overdraw/overlap)
     static final ModConfigSpec.IntValue LOD_BOUNDARY_BUFFER = BUILDER
-            .comment("LOD boundary overlap in blocks (like DH's overdraw prevention)",
-                     "Controls how much LODs overlap with vanilla chunk edges.",
-                     "Higher values = more overlap = smoother transitions but slight overdraw.",
-                     "0 = exact match (may have gaps), 1 = minimal overlap, 2-4 = smoother for fast flight")
+            .comment("LOD boundary overlap in chunks (each unit = 16 blocks of inward bleed)",
+                     "Shrinks the vanilla depth-mask by N chunks, letting LODs render inside",
+                     "the vanilla chunk boundary to hide the seam when flying.",
+                     "0 = exact match (may show seam/gap), 1 = 16 blocks overlap (recommended),",
+                     "2 = 32 blocks, 3 = 48 blocks, 4 = 64 blocks (most aggressive)")
             .defineInRange("lodBoundaryBuffer", 1, 0, 4);
 
-    // World curvature (experimental)
+    // World curvature (experimental, LOD-only - vanilla chunks are not affected)
     static final ModConfigSpec.IntValue EARTH_CURVE_RATIO = BUILDER
-            .comment("World curvature effect - simulates standing on a spherical planet",
+            .comment("World curvature effect - simulates standing on a spherical planet (LOD terrain only)",
                      "0 = disabled (flat world)",
-                     "1 = real Earth curvature (6371km radius)",
-                     "Higher values = more extreme curvature (smaller planet effect)",
-                     "Valid range: 0 (off), or 50-5000. Values 1-49 are auto-corrected to 50.",
+                     "5 = subtle curvature visible at long distances",
+                     "50 = strong curvature (very small planet feel)",
+                     "250 = extreme curvature",
+                     "Note: only affects LOD terrain, vanilla chunks remain flat.",
                      "Inspired by Distant Horizons' earth curvature feature")
-            .defineInRange("earthCurveRatio", 0, 0, 5000);
+            .defineInRange("earthCurveRatio", 0, 0, 250);
 
     // Debug settings
     static final ModConfigSpec.BooleanValue RENDER_STATISTICS = BUILDER

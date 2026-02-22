@@ -156,7 +156,13 @@ bool isCulledByHiz() {
     }
     //pointSample = mix(pointSample, pointSample2, pointSample<=0.000001f);
 
-    return pointSample<=minBB.z;
+    // Apply a conservative depth bias to suppress false-positive HiZ culling that causes
+    // LOD sections to flicker in/out on camera movement. The bias grows with the HiZ mip
+    // level used (coarser samples = more uncertainty). 0.0002 at mip 0 is ~1 block at
+    // typical Minecraft render distances; exp2(miplevel) scales it proportionally.
+    // A section is only declared occluded when the HiZ max-depth is definitively behind it.
+    float hizBias = 0.0002 * exp2(miplevel);
+    return pointSample <= minBB.z - hizBias;
 }
 
 

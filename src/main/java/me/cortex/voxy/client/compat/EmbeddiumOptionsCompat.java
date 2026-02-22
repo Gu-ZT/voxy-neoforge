@@ -137,7 +137,7 @@ public final class EmbeddiumOptionsCompat {
                         "earth_curve_ratio",
                         "voxy.config.general.earth_curve_ratio",
                         "voxy.config.general.earth_curve_ratio.tooltip",
-                        0, 5000, 50, ControlValueFormatter.number(),
+                        0, 250, 5, ControlValueFormatter.number(),
                         (cfg, value) -> cfg.setEarthCurveRatio(value),
                         VoxyConfig::getEarthCurveRatio,
                         OptionImpact.LOW))
@@ -149,8 +149,8 @@ public final class EmbeddiumOptionsCompat {
                         "render_statistics",
                         "voxy.config.general.render_statistics",
                         "voxy.config.general.render_statistics.tooltip",
-                        (cfg, value) -> RenderStatistics.enabled = value,
-                        cfg -> RenderStatistics.enabled,
+                        (cfg, value) -> VoxyNeoForgeConfig.setRenderStatistics(value),
+                        cfg -> VoxyNeoForgeConfig.isRenderStatisticsEnabled(),
                         OptionImpact.LOW))
                 .build();
 

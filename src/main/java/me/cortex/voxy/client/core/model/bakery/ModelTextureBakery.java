@@ -2,6 +2,7 @@ package me.cortex.voxy.client.core.model.bakery;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.ItemBlockRenderTypes;
+import java.util.List;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -18,6 +19,7 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.SingleThreadedRandomSource;
 import net.minecraft.world.level.lighting.LevelLightEngine;
 import net.minecraft.world.level.material.FluidState;
+import net.neoforged.neoforge.client.model.data.ModelData;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4f;
 import org.joml.Quaternionf;
@@ -77,13 +79,29 @@ public class ModelTextureBakery {
 
         int meta = getMetaFromLayer(layer);
 
-        // MC 1.21.1: collectParts() removed, use getQuads(state, direction, random) directly
+        // Wrap in try-catch so exceptions from any mod's BakedModel (e.g. Mekanism BESR-only blocks)
+        // never crash the baking thread or leave blockStatesInFlight in a permanently stuck state.
+        // The block will bake as invisible in LODs, which is better than crashing or leaving entire
+        // sections permanently empty.
         var randomSource = new SingleThreadedRandomSource(42L);
-        for (Direction direction : new Direction[]{Direction.DOWN, Direction.UP, Direction.NORTH, Direction.SOUTH, Direction.WEST, Direction.EAST, null}) {
-            var quads = model.getQuads(state, direction, randomSource);
-            for (var quad : quads) {
-                this.vc.quad(quad, meta|(quad.isTinted()?4:0));
+        try {
+            for (Direction direction : new Direction[]{Direction.DOWN, Direction.UP, Direction.NORTH, Direction.SOUTH, Direction.WEST, Direction.EAST, null}) {
+                // Try the NeoForge 5-param version first (preferred: passes ModelData.EMPTY so mods like
+                // Mekanism's DataBasedBakedModel get non-null ModelData and return the correct model).
+                // Fall back to the vanilla 3-param version if the 5-param call throws.
+                List<net.minecraft.client.renderer.block.model.BakedQuad> quads;
+                try {
+                    quads = model.getQuads(state, direction, randomSource, ModelData.EMPTY, layer);
+                } catch (Exception e5) {
+                    quads = model.getQuads(state, direction, randomSource);
+                }
+                for (var quad : quads) {
+                    this.vc.quad(quad, meta|(quad.isTinted()?4:0));
+                }
             }
+        } catch (Exception e) {
+            // Silently discard bake errors from mod block models.
+            me.cortex.voxy.common.Logger.warn("Failed to bake quads for block state " + state + ": " + e);
         }
     }
 
