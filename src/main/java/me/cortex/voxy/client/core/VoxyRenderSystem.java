@@ -324,11 +324,10 @@ public class VoxyRenderSystem {
         int oldTex0 = glGetIntegeri(GL_TEXTURE_BINDING_2D, 0);
         int oldSampler0 = glGetIntegeri(GL_SAMPLER_BINDING, 0);
 
-        int oldUbo0 = glGetIntegeri(GL_UNIFORM_BUFFER_BINDING, 0);
-        int[] oldSsbo = new int[16];
-        for (int i = 0; i < oldSsbo.length; i++) {
-            oldSsbo[i] = glGetIntegeri(GL_SHADER_STORAGE_BUFFER_BINDING, i);
-        }
+        // Avoid glGetIntegeri for SSBO/UBO bindings — synchronous GPU stall.
+        // Shadow rendering is called every Iris shadow pass; saving 16+ round-trips matters.
+        // Iris manages its own GL state before/after shadow rendering, so zeroing SSBOs
+        // and UBO slot 0 after our shadow pass is safe.
 
         try {
             sectionRenderer.renderShadow(viewport);
@@ -342,9 +341,9 @@ public class VoxyRenderSystem {
             glBindTextureUnit(0, oldTex0);
             glBindSampler(0, oldSampler0);
 
-            glBindBufferBase(GL_UNIFORM_BUFFER, 0, oldUbo0);
-            for (int i = 0; i < oldSsbo.length; i++) {
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, oldSsbo[i]);
+            glBindBufferBase(GL_UNIFORM_BUFFER, 0, 0);
+            for (int i = 0; i < 16; i++) {
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, 0);
             }
 
             if (oldDepthTest) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
@@ -397,11 +396,11 @@ public class VoxyRenderSystem {
         GPUTiming.INSTANCE.marker();//Start marker
         TimingStatistics.main.start();
 
-        //TODO: optimize
-        int[] oldBufferBindings = new int[10];
-        for (int i = 0; i < oldBufferBindings.length; i++) {
-            oldBufferBindings[i] = glGetIntegeri(GL_SHADER_STORAGE_BUFFER_BINDING, i);
-        }
+        // We do NOT query existing SSBO bindings here — glGetIntegeri is a synchronous
+        // GPU→CPU round-trip (expensive stall). Vanilla Minecraft and Embeddium never use
+        // SSBO slots 0-15 for terrain rendering, so it is safe to zero them on exit
+        // rather than saving/restoring. If a future mod conflict arises, restore this.
+        // Was: int[] oldBufferBindings = new int[10]; glGetIntegeri(...) × 10 per frame.
 
 
         int oldFB = GL11.glGetInteger(GL_DRAW_FRAMEBUFFER_BINDING);
@@ -449,7 +448,11 @@ public class VoxyRenderSystem {
             while (this.renderDistanceTracker.setCenterAndProcess(viewport.cameraX, viewport.cameraZ) && VoxyClient.isFrexActive());//While FF is active, run until everything is processed
             TimingStatistics.H.start();
             //Done here as is allows less gl state resetup
-            do { this.modelService.tick(2_000_000); } while (VoxyClient.isFrexActive() && !this.modelService.areQueuesEmpty());
+            // Use a larger bake budget during initial load (many pending models) to fill LODs
+            // faster. Once the queue drains below 50 pending models, drop to 2ms to stay
+            // frame-budget-friendly. Frex path always runs until empty.
+            long modelBakeBudget = this.modelService.getProcessingCount() > 50 ? 10_000_000L : 2_000_000L;
+            do { this.modelService.tick(modelBakeBudget); } while (VoxyClient.isFrexActive() && !this.modelService.areQueuesEmpty());
             TimingStatistics.H.stop();
         }
         GPUTiming.INSTANCE.marker();
@@ -475,10 +478,10 @@ public class VoxyRenderSystem {
 
             IrisCompatManager.clearSamplers();
 
-            //TODO: should/needto actually restore all of these, not just clear them
-            //Clear all the bindings
-            for (int i = 0; i < oldBufferBindings.length; i++) {
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, oldBufferBindings[i]);
+            // Clear all SSBO slots Voxy uses (0-9). Vanilla/Embeddium never bind SSBOs
+            // in the terrain pass, so restoring to 0 is safe and avoids glGetIntegeri stalls.
+            for (int i = 0; i < 10; i++) {
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, 0);
             }
 
             //(Embeddium shader integration not wired)

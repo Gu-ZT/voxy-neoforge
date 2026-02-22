@@ -32,8 +32,12 @@ public class ModelBakerySubsystem {
         this.processingThread = new Thread(()->{//TODO replace this with something good/integrate it into the async processor so that we just have less threads overall
             while (this.isRunning) {
                 this.factory.processAllThings();
+                // Sleep less when there's a large backlog (initial world load with many block states).
+                // Drops to 1ms during heavy load so baked textures are available sooner,
+                // reducing IdNotYetComputedException retries in RenderGenerationService.
+                int sleepMs = this.blockIdCount.get() > 20 ? 1 : 10;
                 try {
-                    Thread.sleep(10);
+                    Thread.sleep(sleepMs);
                 } catch (InterruptedException e) {
                     throw new RuntimeException(e);
                 }

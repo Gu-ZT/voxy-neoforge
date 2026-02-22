@@ -187,9 +187,14 @@ public class AsyncNodeManager {
             if (this.workCounter.get() <= 0 || !this.running) {//No work
                 return;
             }
-            //This is a funny thing, wait a bit, this allows for better batching, but this thread is independent of everything else so waiting a bit should be mostly ok
+            // Wait briefly to allow batching of incoming geometry/node events.
+            // Use a shorter sleep when the queue is large (initial load / flying fast)
+            // to reduce latency from completed meshes to on-screen sections.
+            // 10ms was too slow during initial load (sections sat in queue for 1 extra frame).
+            int pendingWork = this.workCounter.get();
+            int sleepMs = pendingWork > 50 ? 1 : (pendingWork > 10 ? 3 : 10);
             try {
-                Thread.sleep(10);
+                Thread.sleep(sleepMs);
             } catch (InterruptedException e) {
                 throw new RuntimeException(e);
             }
