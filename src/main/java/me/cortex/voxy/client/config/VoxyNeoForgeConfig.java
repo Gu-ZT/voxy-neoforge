@@ -72,15 +72,6 @@ public class VoxyNeoForgeConfig {
             .comment("Don't share threads with Embeddium's chunk builder")
             .define("dontUseEmbeddiumBuilderThreads", false);
 
-    // LOD boundary buffer (overdraw/overlap)
-    static final ModConfigSpec.IntValue LOD_BOUNDARY_BUFFER = BUILDER
-            .comment("LOD boundary overlap in chunks (each unit = 16 blocks of inward bleed)",
-                     "Shrinks the vanilla depth-mask by N chunks, letting LODs render inside",
-                     "the vanilla chunk boundary to hide the seam when flying.",
-                     "0 = exact match (may show seam/gap), 1 = 16 blocks overlap (recommended),",
-                     "2 = 32 blocks, 3 = 48 blocks, 4 = 64 blocks (most aggressive)")
-            .defineInRange("lodBoundaryBuffer", 1, 0, 4);
-
     // World curvature (experimental, LOD-only - vanilla chunks are not affected)
     static final ModConfigSpec.IntValue EARTH_CURVE_RATIO = BUILDER
             .comment("World curvature effect - simulates standing on a spherical planet (LOD terrain only)",
@@ -194,10 +185,6 @@ public class VoxyNeoForgeConfig {
         return DONT_USE_EMBEDDIUM_BUILDER_THREADS.get();
     }
 
-    public static int getLodBoundaryBuffer() {
-        return LOD_BOUNDARY_BUFFER.get();
-    }
-
     public static boolean isRenderStatisticsEnabled() {
         return RENDER_STATISTICS.get();
     }
@@ -246,10 +233,6 @@ public class VoxyNeoForgeConfig {
 
     public static void setDontUseEmbeddiumBuilderThreads(boolean value) {
         DONT_USE_EMBEDDIUM_BUILDER_THREADS.set(value);
-    }
-
-    public static void setLodBoundaryBuffer(int value) {
-        LOD_BOUNDARY_BUFFER.set(value);
     }
 
     public static void setEarthCurveRatio(int value) {

@@ -5,7 +5,6 @@ import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.IGetVoxyRenderSystem;
 import me.cortex.voxy.client.core.VoxyRenderSystem;
 import me.cortex.voxy.common.world.service.VoxelIngestService;
-import me.cortex.voxy.commonImpl.VoxyCommon;
 import org.embeddedt.embeddium.impl.gl.device.CommandList;
 import org.embeddedt.embeddium.impl.render.chunk.RenderSection;
 import org.embeddedt.embeddium.impl.render.chunk.RenderSectionManager;
@@ -33,11 +32,13 @@ public class MixinRenderSectionManager {
     private static final boolean BOBBY_INSTALLED = ModCompat.isModLoaded("bobby");
 
     @Shadow @Final private ClientLevel world;
-
     @Shadow @Final private ChunkBuilder builder;
 
+    // Reset mask when Embeddium recreates RenderSectionManager (render distance change, reload, etc).
+    // Safe because Embeddium immediately re-queues all sections for build after construction,
+    // so the mask will be repopulated as sections complete.
     @Inject(method = "<init>", at = @At("TAIL"))
-    private void voxy$resetChunkTracker(ClientLevel level, int renderDistance, CommandList commandList, CallbackInfo ci) {
+    private void voxy$init(ClientLevel level, int renderDistance, CommandList commandList, CallbackInfo ci) {
         if (level.levelRenderer != null) {
             var system = ((IGetVoxyRenderSystem)(level.levelRenderer)).getVoxyRenderSystem();
             if (system != null) {
@@ -47,10 +48,11 @@ public class MixinRenderSectionManager {
         this.bottomSectionY = ((net.minecraft.world.level.Level)this.world).getMinBuildHeight() >> 4;
     }
 
+    // Ingest on chunk remove (non-Bobby path)
     @Inject(method = "onChunkRemoved", at = @At("HEAD"))
-    private void injectIngest(int x, int z, CallbackInfo ci) {
+    private void voxy$ingestOnRemove(int x, int z, CallbackInfo ci) {
         if (VoxyConfig.CONFIG.isIngestEnabled() && !BOBBY_INSTALLED) {
-            var cccm = (ICheekyClientChunkCache)this.world.getChunkSource();
+            var cccm = (ICheekyClientChunkCache) this.world.getChunkSource();
             if (cccm != null) {
                 var chunk = cccm.voxy$cheekyGetChunk(x, z);
                 if (chunk != null) {
@@ -60,6 +62,7 @@ public class MixinRenderSectionManager {
         }
     }
 
+    // Ingest on chunk add
     @Inject(method = "onChunkAdded", at = @At("HEAD"))
     private void voxy$ingestOnAdd(int x, int z, CallbackInfo ci) {
         if (this.world.levelRenderer != null && VoxyConfig.CONFIG.isIngestEnabled()) {
@@ -77,59 +80,48 @@ public class MixinRenderSectionManager {
     @Unique private int cachedChunkStatus;
     @Unique private int bottomSectionY;
 
+    // Mirror of upstream Sodium logic. Tracks depth mask and rawIngest via setInfo transitions.
+    // Sodium's setInfo returns boolean (changed); Embeddium's returns void.
+    // We use isBuilt() pre/post to detect the same transition.
     @Redirect(method = "updateSectionInfo", at = @At(value = "INVOKE", target = "Lorg/embeddedt/embeddium/impl/render/chunk/RenderSection;setInfo(Lorg/embeddedt/embeddium/impl/render/chunk/data/BuiltSectionInfo;)V"))
     private void voxy$updateOnUpload(RenderSection instance, BuiltSectionInfo info) {
-        boolean wasBuilt = instance.getFlags() != 0;
-        int flags = instance.getFlags();
-
+        boolean wasBuilt = instance.isBuilt();
         instance.setInfo(info);
+        boolean isBuilt = instance.isBuilt();
 
-        if (wasBuilt == (instance.getFlags() != 0)) {
-            return;
-        }
-
-        flags |= instance.getFlags();
-        if (flags == 0) {
-            return;
-        }
+        if (wasBuilt == isBuilt) return; // No state change — nothing to do
 
         VoxyRenderSystem system = ((IGetVoxyRenderSystem)(this.world.levelRenderer)).getVoxyRenderSystem();
-        if (system == null) {
-            return;
-        }
+        if (system == null) return;
 
         int x = instance.getChunkX(), y = instance.getChunkY(), z = instance.getChunkZ();
-
-        if (wasBuilt && VoxyConfig.CONFIG.isIngestEnabled()) {
-            var tracker = ((AccessorChunkTracker) ChunkTrackerHolder.get(this.world)).getChunkStatus();
-            long key = ChunkPos.asLong(x, z);
-            if (key != this.cachedChunkPos) {
-                this.cachedChunkPos = key;
-                this.cachedChunkStatus = tracker.getOrDefault(key, 0);
-            }
-            if (this.cachedChunkStatus == 3) {
-                var section = this.world.getChunk(x, z).getSection(y - this.bottomSectionY);
-                var lp = this.world.getLightEngine();
-
-                var csp = SectionPos.of(x, y, z);
-                var blp = lp.getLayerListener(LightLayer.BLOCK).getDataLayerData(csp);
-                var slp = lp.getLayerListener(LightLayer.SKY).getDataLayerData(csp);
-
-                VoxelIngestService.rawIngest(system.getEngine(), section, x, y, z, blp == null ? null : blp.copy(), slp == null ? null : slp.copy());
-            }
-        }
-
-        if (VoxyCommon.IS_MINE_IN_ABYSS) {
-            int sector = (x + 512) >> 10;
-            x -= sector << 10;
-            y += 16 + (256 - 32 - sector * 30);
-        }
-
         long pos = SectionPos.asLong(x, y, z);
-        if (wasBuilt) {
-            system.chunkBoundRenderer.removeSection(pos);
-        } else {
+
+        if (!wasBuilt) {
+            // Transition: unbuilt → built. Add to depth mask.
             system.chunkBoundRenderer.addSection(pos);
+        } else {
+            // Transition: built → unbuilt. Remove from depth mask.
+            system.chunkBoundRenderer.removeSection(pos);
+
+            // rawIngest on section being cleared (non-Bobby path)
+            if (VoxyConfig.CONFIG.isIngestEnabled()) {
+                var tracker = ((AccessorChunkTracker) ChunkTrackerHolder.get(this.world)).getChunkStatus();
+                long key = ChunkPos.asLong(x, z);
+                if (key != this.cachedChunkPos) {
+                    this.cachedChunkPos = key;
+                    this.cachedChunkStatus = tracker.getOrDefault(key, 0);
+                }
+                if (this.cachedChunkStatus == 3) {
+                    var section = this.world.getChunk(x, z).getSection(y - this.bottomSectionY);
+                    var lp = this.world.getLightEngine();
+                    var csp = SectionPos.of(x, y, z);
+                    var blp = lp.getLayerListener(LightLayer.BLOCK).getDataLayerData(csp);
+                    var slp = lp.getLayerListener(LightLayer.SKY).getDataLayerData(csp);
+                    VoxelIngestService.rawIngest(system.getEngine(), section, x, y, z,
+                            blp == null ? null : blp.copy(), slp == null ? null : slp.copy());
+                }
+            }
         }
     }
 }

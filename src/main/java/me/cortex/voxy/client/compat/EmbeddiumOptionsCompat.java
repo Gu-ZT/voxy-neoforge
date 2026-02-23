@@ -126,14 +126,6 @@ public final class EmbeddiumOptionsCompat {
                         OptionImpact.LOW,
                         OptionFlag.REQUIRES_RENDERER_RELOAD))
                 .add(intSliderOption(
-                        "lod_boundary_buffer",
-                        "voxy.config.general.lod_boundary_buffer",
-                        "voxy.config.general.lod_boundary_buffer.tooltip",
-                        0, 4, 1, ControlValueFormatter.number(),
-                        (cfg, value) -> cfg.setLodBoundaryBuffer(value),
-                        VoxyConfig::getLodBoundaryBuffer,
-                        OptionImpact.LOW))
-                .add(intSliderOption(
                         "earth_curve_ratio",
                         "voxy.config.general.earth_curve_ratio",
                         "voxy.config.general.earth_curve_ratio.tooltip",

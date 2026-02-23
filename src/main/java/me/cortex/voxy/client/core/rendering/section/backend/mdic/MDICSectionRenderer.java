@@ -89,6 +89,8 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
             .compile();
 
     private final GlBuffer uniform = new GlBuffer(1024).zero();//TODO move to viewport?
+    // Reusable scratch matrix to avoid per-frame heap allocation in uploadUniformBuffer.
+    private final Matrix4f uploadScratch = new Matrix4f();
 
     //TODO: needs to be in the viewport, since it contains the compute indirect call/values
     private final GlBuffer distanceCountBuffer = new GlBuffer(1024*4+100_000*4).zero();//TODO move to viewport?
@@ -151,9 +153,9 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
     private void uploadUniformBuffer(MDICViewport viewport) {
         long ptr = UploadStream.INSTANCE.upload(this.uniform, 0, 1024);
         
-        var mat = new Matrix4f(viewport.MVP);
-        mat.translate(-viewport.innerTranslation.x, -viewport.innerTranslation.y, -viewport.innerTranslation.z);
-        mat.getToAddress(ptr); ptr += 4*4*4;
+        this.uploadScratch.set(viewport.MVP)
+                .translate(-viewport.innerTranslation.x, -viewport.innerTranslation.y, -viewport.innerTranslation.z)
+                .getToAddress(ptr); ptr += 4*4*4;
 
         viewport.section.getToAddress(ptr); ptr += 4*3;
 

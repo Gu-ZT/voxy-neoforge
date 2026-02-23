@@ -60,10 +60,6 @@ public class VoxyConfig {
         return VoxyNeoForgeConfig.dontUseEmbeddiumBuilderThreads();
     }
 
-    public int getLodBoundaryBuffer() {
-        return VoxyNeoForgeConfig.getLodBoundaryBuffer();
-    }
-
     public int getEarthCurveRatio() {
         return VoxyNeoForgeConfig.getEarthCurveRatio();
     }
@@ -108,10 +104,6 @@ public class VoxyConfig {
 
     public void setDontUseEmbeddiumBuilderThreads(boolean value) {
         VoxyNeoForgeConfig.setDontUseEmbeddiumBuilderThreads(value);
-    }
-
-    public void setLodBoundaryBuffer(int value) {
-        VoxyNeoForgeConfig.setLodBoundaryBuffer(value);
     }
 
     public void setEarthCurveRatio(int value) {

@@ -203,8 +203,6 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
 
     private static final long SCRATCH = MemoryUtil.nmemAlloc(4*4*4);
     protected static void transformBlitDepth(FullscreenBlit blitShader, int srcDepthTex, int dstFB, Viewport<?> viewport, Matrix4f targetTransform) {
-        // at this point the dst frame buffer doesn't have a stencil attachment so we don't need to keep the stencil test on for the blit
-        // in the worst case the dstFB does have a stencil attachment causing this pass to become 'corrupted'
         glDisable(GL_STENCIL_TEST);
         glBindFramebuffer(GL30.GL_FRAMEBUFFER, dstFB);
 
@@ -212,11 +210,19 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         glBindTextureUnit(0, srcDepthTex);
         new Matrix4f(viewport.MVP).invert().getToAddress(SCRATCH);
         nglUniformMatrix4fv(1, 1, false, SCRATCH);//inverse fromProjection
-        targetTransform.getToAddress(SCRATCH);//new Matrix4f(tooProjection).mul(vp.modelView).get(data);
+        targetTransform.getToAddress(SCRATCH);
         nglUniformMatrix4fv(2, 1, false, SCRATCH);//tooProjection
 
+        // Use GL_LESS so Voxy's reprojected depth only wins where it is strictly closer than
+        // whatever MC already wrote. At the water/LOD boundary MC's water depth is already in
+        // the depth buffer; the double-projection (MC→Voxy→MC) introduces sub-ULP error that
+        // can make Voxy's value marginally smaller under GL_LEQUAL, overwriting MC's depth by
+        // epsilon. TAA then sees the depth flicker every frame at that boundary, producing the
+        // flickering-behind-water artefact at chunk borders. GL_LESS prevents the overwrite.
         glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
         blitShader.blit();
+        glDepthFunc(GL_LEQUAL);
         glDisable(GL_STENCIL_TEST);
         glDisable(GL_DEPTH_TEST);
     }

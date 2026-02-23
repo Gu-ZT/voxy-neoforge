@@ -247,10 +247,20 @@ public class RenderGenerationService {
                 // Give up after too many attempts on THIS task - submit empty result to unblock node processing.
                 // The task was already removed from taskMap at the top of processJob, so we just
                 // submit the empty result and return. Children are preserved so the subtree is still traversed.
-                // 300 attempts gives large modpacks (5000+ block states) time to finish baking before giving up.
-                if (task.attempts > 300) {
+                //
+                // Two-tier giveup:
+                //   Soft limit (300): only give up if the model bakery is IDLE. With large modpacks
+                //   (Craftoria has 18k+ block states), the bakery stays busy for several seconds after a
+                //   direction change exposes new LOD sections. Giving up while baking is still in progress
+                //   submits empty meshes for sections whose models haven't baked yet, causing visible holes
+                //   where vanilla chunks haven't loaded (players see through to caves).
+                //   Hard limit (3000): unconditional giveup to handle permanently-missing models (mod
+                //   removed mid-session, corrupt data, etc.) without spinning forever (~3s per thread).
+                boolean bakeryIdle = this.modelBakery.areQueuesEmpty();
+                if ((task.attempts > 300 && bakeryIdle) || task.attempts > 3000) {
                     Logger.warn("Giving up on section mesh after " + task.attempts + " attempts at pos " +
-                        WorldEngine.pprintPos(task.position) + " - submitting empty mesh");
+                        WorldEngine.pprintPos(task.position) + " - submitting empty mesh" +
+                        (bakeryIdle ? " (bakery idle)" : " (hard limit)"));
                     if (this.resultConsumer != null) {
                         this.resultConsumer.accept(BuiltSection.emptyWithChildren(task.position, section.getNonEmptyChildren()));
                     }

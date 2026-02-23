@@ -153,7 +153,7 @@ public class VoxyRenderSystem {
                     maxSec = 7;
                 }
 
-                this.renderDistanceTracker = new RenderDistanceTracker(20,
+                this.renderDistanceTracker = new RenderDistanceTracker(200,
                         minSec,
                         maxSec,
                         this.nodeManager::addTopLevel,
@@ -201,8 +201,14 @@ public class VoxyRenderSystem {
         //var projection = ShadowMatrices.createOrthoMatrix(160, -16*300, 16*300);
         //var projection = new Matrix4f(matrices.projection());
 
+        // Query GL state once here; results are cached so renderOpaque() can skip the GL round-trips.
         int[] dims = new int[4];
         glGetIntegerv(GL_VIEWPORT, dims);
+        this.cachedFramebufferId = GL11.glGetInteger(GL_DRAW_FRAMEBUFFER_BINDING);
+        this.cachedViewportX = dims[0];
+        this.cachedViewportY = dims[1];
+        this.cachedViewportW = dims[2];
+        this.cachedViewportH = dims[3];
 
         int width = dims[2];
         int height = dims[3];
@@ -352,6 +358,10 @@ public class VoxyRenderSystem {
         }
     }
 
+    // Cached GL state from setupViewport() so renderOpaque() avoids synchronous GL queries.
+    private int cachedFramebufferId = 0;
+    private int cachedViewportX = 0, cachedViewportY = 0, cachedViewportW = 0, cachedViewportH = 0;
+
     private boolean renderOpaqueFirstCall = true;
     private int setupViewportWarnCount = 0;
 
@@ -375,12 +385,9 @@ public class VoxyRenderSystem {
 
         if (renderOpaqueFirstCall) {
             renderOpaqueFirstCall = false;
-            int[] dbgDims = new int[4];
-            glGetIntegerv(GL_VIEWPORT, dbgDims);
-            int dbgFB = GL11.glGetInteger(GL_DRAW_FRAMEBUFFER_BINDING);
             Logger.info("[DIAG] renderOpaque first call: viewport=" + viewport.width + "x" + viewport.height
-                    + " GL_VIEWPORT=" + dbgDims[2] + "x" + dbgDims[3]
-                    + " boundFB=" + dbgFB
+                    + " GL_VIEWPORT=" + this.cachedViewportW + "x" + this.cachedViewportH
+                    + " boundFB=" + this.cachedFramebufferId
                     + " shadowActive=" + IrisCompatManager.isShadowActive()
                     + " pipeline=" + this.pipeline.getClass().getSimpleName());
         }
@@ -403,11 +410,10 @@ public class VoxyRenderSystem {
         // Was: int[] oldBufferBindings = new int[10]; glGetIntegeri(...) × 10 per frame.
 
 
-        int oldFB = GL11.glGetInteger(GL_DRAW_FRAMEBUFFER_BINDING);
+        // Use cached GL state from setupViewport() — avoids two synchronous GPU→CPU round-trips per frame.
+        // cachedFramebufferId / cachedViewport* are populated in setupViewport() which is called just before.
+        int oldFB = this.cachedFramebufferId;
         int boundFB = oldFB;
-
-        int[] dims = new int[4];
-        glGetIntegerv(GL_VIEWPORT, dims);
 
         glViewport(0,0, viewport.width, viewport.height);
 
@@ -432,7 +438,7 @@ public class VoxyRenderSystem {
 
         GPUTiming.INSTANCE.marker();
         //The entire rendering pipeline (excluding the chunkbound thing)
-        this.pipeline.runPipeline(viewport, boundFB, dims[2], dims[3]);
+        this.pipeline.runPipeline(viewport, boundFB, this.cachedViewportW, this.cachedViewportH);
         GPUTiming.INSTANCE.marker();
 
         TimingStatistics.main.stop();
@@ -461,7 +467,7 @@ public class VoxyRenderSystem {
         GPUTiming.INSTANCE.tick();
 
         glBindFramebuffer(GlConst.GL_FRAMEBUFFER, oldFB);
-        glViewport(dims[0], dims[1], dims[2], dims[3]);
+        glViewport(this.cachedViewportX, this.cachedViewportY, this.cachedViewportW, this.cachedViewportH);
 
         {//Reset state manager stuffs
             glUseProgram(0);

@@ -4,7 +4,6 @@ layout(binding = 0, std140) uniform SceneUniform {
     mat4 MVP;
     ivec4 section;
     vec4 negInnerSec;
-    int boundaryBuffer;  // LOD overlap margin in chunks (0-4); each unit = 16 blocks inward bleed
 };
 
 layout(binding = 1, std430) restrict readonly buffer ChunkPosBuffer {
@@ -16,34 +15,11 @@ ivec3 unpackPos(ivec2 pos) {
 }
 
 bool shouldRender(ivec3 icorner) {
-    // MC 1.21.1 NeoForge: Configurable boundary buffer for LOD/vanilla chunk transition
-    //
-    // The buffer SHRINKS the "vanilla present" detection range, causing LODs to render
-    // in a LARGER area (overlapping with vanilla edges). Depth testing hides the overlap.
-    //
-    // boundaryBuffer (0-4 blocks):
-    //   0 = exact match with Embeddium (may have gaps at boundaries)
-    //   1-4 = shrink detection range, more LOD overlap (smoother transition)
-    //
-    // FIX: Apply buffer to distance threshold, not corner positions.
-    // This provides uniform overlap at ALL angles including diagonals.
-    // Previous approach shrunk corners per-axis, giving only buf/sqrt(2) at 45°.
-
-    // Chunk AABB corners (original, no shrinkage)
-    ivec3 minCorner = icorner;
-    ivec3 maxCorner = icorner + 16;
-
-    // Select closest corner of AABB to camera (handles all quadrants)
-    vec3 corner = vec3(mix(mix(ivec3(0), minCorner, greaterThan(minCorner, ivec3(0))), maxCorner, lessThan(maxCorner, ivec3(0)))) - negInnerSec.xyz;
-
-    // MC Java Edition uses SQUARE render distance (chunk grid), not circular.
-    // Chebyshev distance (max of abs) matches vanilla's square pattern.
-    // boundaryBuffer is in CHUNKS (each = 16 blocks). Shrinking the threshold causes the
-    // depth mask to stop covering the outermost N chunks, letting LODs bleed inward by
-    // N*16 blocks - creating a meaningful overlap that hides the vanilla/LOD seam.
-    float effectiveRange = negInnerSec.w - float(boundaryBuffer) * 16.0;
-    bool visible = max(abs(corner.x), abs(corner.z)) < effectiveRange;
-    visible = visible && abs(corner.y) < effectiveRange;
+    // Closest point on [icorner, icorner+16] to the camera — matches Embeddium's
+    // nearestToZero(ox, ox+16) exactly, so cull boundary aligns with rendered sections.
+    vec3 corner = vec3(mix(mix(ivec3(0), icorner, greaterThan(icorner, ivec3(0))), icorner+16, lessThan(icorner+16, ivec3(0))))-negInnerSec.xyz;
+    bool visible = (corner.x*corner.x + corner.z*corner.z) < (negInnerSec.w*negInnerSec.w);
+    visible = visible && abs(corner.y) < negInnerSec.w;
     return visible;
 }
 

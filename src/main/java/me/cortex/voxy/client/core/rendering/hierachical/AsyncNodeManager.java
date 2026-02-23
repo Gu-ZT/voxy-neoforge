@@ -254,7 +254,8 @@ public class AsyncNodeManager {
 
         //Limit uploading as well as by geometry capacity being available
         // must have 50 mb of free geometry space to upload
-        for (int limit = 0; limit < 300 && ((this.geometryCapacity-this.geometryManager.getGeometryUsedBytes())>50_000_000L); limit++) {
+        // 1000 entries per cycle (was 300) to flush larger batches during initial world load.
+        for (int limit = 0; limit < 1000 && ((this.geometryCapacity-this.geometryManager.getGeometryUsedBytes())>50_000_000L); limit++) {
             var job = this.geometryUpdateQueue.poll();
             if (job == null)
                 break;
@@ -486,7 +487,10 @@ public class AsyncNodeManager {
         this.needsWaitForSync |= results.geometryUpload.currentElemCopyAmount*8L > 2L<<20;//2mb limit per frame
         this.needsWaitForSync |= results.cleanerOperations.size() > 1024;
         this.needsWaitForSync |= results.scatterWriteLocationMap.size() > 4096;
-        this.needsWaitForSync |= results.tlnDelta.size() > 10;
+        // Raised from 10 → 100: during initial world load, TLN registration adds hundreds of nodes
+        // at once. A threshold of 10 caused the async manager to sleep(10ms) waiting for sync on
+        // almost every cycle, stalling initial LOD fill significantly.
+        this.needsWaitForSync |= results.tlnDelta.size() > 100;
 
         if (!RESULT_HANDLE.compareAndSet(this, null, results)) {
             throw new IllegalArgumentException("Should always have null");

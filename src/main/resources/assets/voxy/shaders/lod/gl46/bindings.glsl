@@ -99,7 +99,11 @@ layout(binding = LIGHTING_SAMPLER_BINDING) uniform sampler2D lightSampler;
 
 vec4 getLighting(uint index) {
     int i2 = int(index);
-    return texture(lightSampler, clamp((vec2((i2>>4)&0xF, i2&0xF))/15, vec2(8.0f/256), vec2(248.0f/256)));
+    // Match Embeddium's lightmap UV calculation: lightLevel * 16 / 256 = lightLevel / 16.
+    // Embeddium packs light as (level << 4) and divides by 256, landing at pixel centers
+    // {0/256, 16/256, ..., 240/256}. Using /15 overshoots to 1.0 at max light, sampling
+    // a brighter pixel than Embeddium does, causing consistent brightness excess on all blocks.
+    return texture(lightSampler, clamp((vec2((i2>>4)&0xF, i2&0xF)) / 16.0, vec2(0.5f/16.0f), vec2(15.5f/16.0f)));
 }
 #endif
 

@@ -11,6 +11,7 @@ import me.cortex.voxy.client.core.rendering.hierachical.HierarchicalOcclusionTra
 import me.cortex.voxy.client.core.rendering.hierachical.NodeCleaner;
 import me.cortex.voxy.client.core.rendering.post.FullscreenBlit;
 import me.cortex.voxy.client.core.rendering.util.DepthFramebuffer;
+import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.client.Minecraft;
 import org.joml.Matrix4f;
 import org.lwjgl.system.MemoryStack;
@@ -109,14 +110,19 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
     @Override
     protected void finish(Viewport<?> viewport, int sourceFrameBuffer, int srcWidth, int srcHeight) {
         this.finalBlit.bind();
-        // MC 1.21.1 / Embeddium 1.0.x: Environmental fog disabled
-        // FogParameters.environmental*() methods don't exist in Embeddium 1.0.x
-        // RenderSystem.getShaderFog*() returns standard fog (underwater/lava) not environmental fog
-        // TODO: Research Embeddium environmental fog API or implement custom distance-based fog
         if (this.useEnvFog) {
-            // Disable fog uniforms - set to zero (no fog effect)
-            glUniform4f(4, 0, 0, 0, 0);
-            glUniform4f(5, 0, 0, 0, 0);
+            // MC 1.21.1: Use RenderSystem fog state which is set by BackgroundRenderer before chunk rendering.
+            // This matches what Embeddium passes to its chunk shader (ChunkShaderFogComponent uses same API).
+            float fogStart = RenderSystem.getShaderFogStart();
+            float fogEnd   = RenderSystem.getShaderFogEnd();
+            float[] fogColor = RenderSystem.getShaderFogColor();
+            // Encode linear fog as: fogLerp = clamp(dist * x + y, 0, z)
+            // → x = 1/(end-start), y = -start/(end-start), z = 1
+            float invRange = (fogEnd > fogStart) ? 1.0f / (fogEnd - fogStart) : 0.0f;
+            glUniform4f(4, invRange, -fogStart * invRange, 1.0f, 0.0f);
+            // fogColour.a used as blend gate: 1.0 = fog active, 0.0 = no fog
+            float fogAlpha = (invRange > 0.0f) ? fogColor[3] : 0.0f;
+            glUniform4f(5, fogColor[0], fogColor[1], fogColor[2], fogAlpha);
         }
 
         glBindTextureUnit(3, this.colourSSAOTex.id);

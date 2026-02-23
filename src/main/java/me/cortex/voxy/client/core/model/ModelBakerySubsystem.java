@@ -1,13 +1,13 @@
 package me.cortex.voxy.client.core.model;
 
 
-import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.world.other.Mapper;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.locks.ReentrantLock;
 
 import static org.lwjgl.opengl.GL11.glGetInteger;
 import static org.lwjgl.opengl.GL30.GL_FRAMEBUFFER;
@@ -87,9 +87,10 @@ public class ModelBakerySubsystem {
         this.storage.free();
     }
 
-    //This is on this side only and done like this as only worker threads call this code
-    private final ReentrantLock seenIdsLock = new ReentrantLock();
-    private final IntOpenHashSet seenIds = new IntOpenHashSet(6000);//TODO: move to a lock free concurrent hashmap
+    // Lock-free set of block IDs that have been seen (queued or baked).
+    // ConcurrentHashMap.newKeySet() gives lock-free add/contains/remove without serializing
+    // all worker threads on a single ReentrantLock during initial load with thousands of IDs.
+    private final Set<Integer> seenIds = ConcurrentHashMap.newKeySet(6000);
     public void requestBlockBake(int blockId) {
         if (this.mapper.getBlockStateCount() < blockId) {
             Logger.error("Error, got bakeing request for out of range state id. StateId: " + blockId + " max id: " + this.mapper.getBlockStateCount(), new Exception());
@@ -99,7 +100,6 @@ public class ModelBakerySubsystem {
         if (this.factory.hasModelForBlockId(blockId)) {
             return;
         }
-        this.seenIdsLock.lock();
         boolean isNew = this.seenIds.add(blockId);
         if (!isNew) {
             // Was seen before. If the model still hasn't been baked (idMappings == -1),
@@ -108,15 +108,11 @@ public class ModelBakerySubsystem {
             // We only do this once by removing from seenIds so the next call can re-add it.
             if (!this.factory.hasModelForBlockId(blockId)) {
                 this.seenIds.remove(blockId); // Allow future re-queue if needed
-                this.seenIdsLock.unlock();
                 this.blockIdQueue.add(blockId);
                 this.blockIdCount.incrementAndGet();
-            } else {
-                this.seenIdsLock.unlock();
             }
             return;
         }
-        this.seenIdsLock.unlock();
         this.blockIdQueue.add(blockId);
         this.blockIdCount.incrementAndGet();
     }

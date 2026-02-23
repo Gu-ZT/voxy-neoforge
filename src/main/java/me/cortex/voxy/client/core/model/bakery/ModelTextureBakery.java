@@ -260,6 +260,11 @@ public class ModelTextureBakery {
             this.bakeBlockModel(state, layer);
             isAnyShaded |= this.vc.anyShaded;
             isAnyDarkend |= this.vc.anyDarkendTex;
+            // NeoForge 1.21.1: MipmapStrategy.DARK_CUTOUT doesn't exist in vanilla SpriteContents.
+            // Use RenderType.cutoutMipped() as proxy — covers grass, leaves, foliage (same blocks
+            // Fabric marks as DARK_CUTOUT). When true, MipGen.putTextures(darkened=true) skips
+            // solidify(), preserving intended darkness in pre-darkened cutout sprite mips.
+            isAnyDarkend |= (layer == net.minecraft.client.renderer.RenderType.cutoutMipped());
             if (!this.vc.isEmpty()) {//only render if there... is shit to render
 
                 //Setup for continual emission

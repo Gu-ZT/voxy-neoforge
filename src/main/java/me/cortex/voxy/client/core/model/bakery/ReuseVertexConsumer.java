@@ -83,7 +83,8 @@ public final class ReuseVertexConsumer implements VertexConsumer {
     public ReuseVertexConsumer quad(BakedQuad quad, int metadata) {
         // MC 1.21.1: BakedQuad API changed - shade() → isShade(), sprite() → getSprite()
         this.anyShaded |= quad.isShade();
-        // MC 1.21.1: MipmapStrategy check removed - darkened textures not detected
+        // MC 1.21.1: MipmapStrategy.DARK_CUTOUT doesn't exist in NeoForge vanilla SpriteContents.
+        // Detection is handled at the ModelTextureBakery level via RenderType.cutoutMipped() instead.
         this.anyDarkendTex = false;
         this.ensureCanPut();
 

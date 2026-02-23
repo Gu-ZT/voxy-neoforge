@@ -23,12 +23,12 @@ public class MixinClientChunkCache implements ICheekyClientChunkCache {
 
     @Override
     public LevelChunk voxy$cheekyGetChunk(int x, int z) {
-        //This doesnt do the in range check stuff, it just gets the chunk at all costs
         return this.storage.getChunk(this.storage.getIndex(x, z));
     }
 
+    // Bobby ingest on chunk unload
     @Inject(method = "drop", at = @At("HEAD"))
-    public void voxy$captureChunkBeforeUnload(ChunkPos pos, CallbackInfo ci) {
+    public void voxy$onChunkUnload(ChunkPos pos, CallbackInfo ci) {
         if (VoxyConfig.CONFIG.isIngestEnabled() && BOBBY_INSTALLED) {
             var chunk = this.voxy$cheekyGetChunk(pos.x, pos.z);
             if (chunk != null) {
