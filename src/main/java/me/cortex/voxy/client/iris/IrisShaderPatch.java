@@ -196,6 +196,10 @@ public class IrisShaderPatch {
         public boolean excludeLodsFromVanillaDepth;
         public float[] renderScale;
         public boolean useViewportDims;
+        // When true, Voxy injects #define DISTANT_HORIZONS and provides dhDepthTex / dhProjection
+        // uniforms so the shader pack treats Voxy LODs as DH geometry in its deferred passes.
+        // Required for packs that fix fog and cloud occlusion via the DH code path (e.g. Complementary Unbound).
+        public boolean dhImpersonation;
         //public boolean deferTranslucentRendering;
         public String checkValid() {
             if (this.blending != null) {
@@ -286,6 +290,10 @@ public class IrisShaderPatch {
         return !this.patchData.excludeLodsFromVanillaDepth;
     }
 
+    public boolean isDhImpersonation() {
+        return this.patchData.dhImpersonation;
+    }
+
     public float[] getRenderScale() {
         if (this.patchData.renderScale == null || this.patchData.renderScale.length==0) {
             return new float[]{1,1};
@@ -361,7 +369,7 @@ public class IrisShaderPatch {
         patchData.version = VERSION;
         patchData.opaqueDrawBuffers = opaqueBuffers;
         patchData.translucentDrawBuffers = translucentBuffers;
-        patchData.uniforms = new String[0];
+        patchData.uniforms = new String[]{"sunAngle", "worldTime"};
         patchData.samplers = new Object2ObjectLinkedOpenHashMap<>();
         patchData.opaquePatchData = buildFallbackPatch(opaqueBuffers);
         patchData.translucentPatchData = buildFallbackPatch(translucentBuffers);
@@ -441,6 +449,10 @@ public class IrisShaderPatch {
             builder.append("layout(location = ").append(i).append(") out vec4 outColour").append(i).append(";\n");
         }
 
+        // Varyings emitted by quads3.vert for directional lighting
+        builder.append("layout(location = 5) in vec3 vViewPos;\n")
+               .append("layout(location = 6) in flat vec3 vWorldNormal;\n\n");
+
         builder.append("\nvoid voxy_emitFragment(VoxyFragmentParameters parameters) {\n")
                 .append("    vec4 colour = parameters.sampledColour;\n")
                 // Block/biome tinting (same heuristic as the non-patched path)
@@ -455,22 +467,36 @@ public class IrisShaderPatch {
                 .append("    if (doTint) {\n")
                 .append("        colour *= parameters.tinting;\n")
                 .append("    }\n\n")
-                // Apply Minecraft lightmap + vanilla directional face shading.
-                // This prevents the "flat/unlit" look under shader packs when no voxy.json is present.
+                // MC lightmap gives block+sky light. Reconstruct directional sun lighting from sunAngle
+                // and the per-fragment world-space normal (vWorldNormal from vertex shader).
                 .append("    vec4 light = texture(lightSampler, parameters.lightMap);\n")
                 .append("    BlockModel model = modelData[parameters.modelId];\n")
-                .append("    bool isShaded = modelIsShaded(model);\n")
+                .append("    bool isShaded = modelIsShaded(model);\n\n")
+                // Reconstruct approximate sun direction from sunAngle.
+                // sunAngle: 0=sunrise, 0.25=noon, 0.5=sunset, 0.75=midnight.
+                // Sun travels in the X-Z plane rotated 90°; approximate as XY arc.
+                // sunAngle→radians for a half-circle: angle = sunAngle * 2π, sun at (sin, cos, 0).
+                // Clamp cos(elevation) to 0 below horizon.
+                .append("    float sunRad = sunAngle * 6.28318;\n")
+                .append("    vec3 sunDir = normalize(vec3(sin(sunRad), cos(sunRad), 0.0));\n")
+                .append("    float moonRad = sunRad + 3.14159;\n")
+                .append("    vec3 moonDir = normalize(vec3(sin(moonRad), cos(moonRad), 0.0));\n")
+                // Dot product of fragment normal with sun/moon direction → directional contribution
+                .append("    float sunDot  = max(0.0, dot(vWorldNormal, sunDir));\n")
+                .append("    float moonDot = max(0.0, dot(vWorldNormal, moonDir)) * 0.15;\n")
+                // Ambient: sky light channel from lightmap already carries sky-influenced ambient.
+                // We scale the additional directional term by the sky light level so underground/covered
+                // blocks don't get lit by a sun they can't see.
+                .append("    float skyLight = parameters.lightMap.y;\n")
+                .append("    float directional = (sunDot + moonDot) * skyLight;\n\n")
                 .append("    float faceTint;\n")
                 .append("    if (!isShaded) {\n")
                 .append("        faceTint = NO_SHADE_FACE_TINT;\n")
-                .append("    } else if ((parameters.face>>1u) == 1u) {\n")
-                .append("        faceTint = Z_AXIS_FACE_TINT;\n")
-                .append("    } else if ((parameters.face>>1u) == 2u) {\n")
-                .append("        faceTint = X_AXIS_FACE_TINT;\n")
-                .append("    } else if (parameters.face == 1u) {\n")
-                .append("        faceTint = UP_FACE_TINT;\n")
                 .append("    } else {\n")
-                .append("        faceTint = DOWN_FACE_TINT;\n")
+                // Blend from vanilla ambient (0.6) toward full directional lighting as sky light increases.
+                // This preserves the vanilla look for block-lit surfaces while adding sun directionality.
+                .append("        float ambient = mix(0.5, 0.8, skyLight);\n")
+                .append("        faceTint = ambient + directional * 0.5;\n")
                 .append("    }\n")
                 .append("    colour.rgb *= light.rgb * faceTint;\n")
                 .append("    colour = colour + vec4(0,0,0,float(interData.w&0xFFu)/255);\n\n");

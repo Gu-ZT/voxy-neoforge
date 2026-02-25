@@ -25,6 +25,9 @@ layout(location = 0) in flat uvec4 interData;
 #ifndef USE_NV_BARRY
 layout(location = 1) in vec2 uv;
 #endif
+// Varyings emitted by quads3.vert for shader-pack directional lighting (unused in non-patched path).
+layout(location = 5) in vec3 vViewPos;
+layout(location = 6) in flat vec3 vWorldNormal;
 
 #ifdef DEBUG_RENDER
 layout(location = 7) in flat uint quadDebug;

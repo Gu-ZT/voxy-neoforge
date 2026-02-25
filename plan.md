@@ -1,156 +1,185 @@
-# Voxy LOD Boundary Fix Plan
+# Voxy LOD Lighting Parity Refactor Plan
 
-## Problem Statement
+## Scope
+This document is a handoff plan for implementing chunk-parity LOD lighting in this branch.
+Goal: make Voxy LOD shading match vanilla/Embeddium chunk shading as closely as possible under Iris shader packs (including VanillAA).
 
-6-chunk gaps appear at the LOD/vanilla boundary when moving or flying.
-The depth mask (ChunkBoundRenderer) does not cover the full area that MC
-considers "loaded", so LOD geometry bleeds through.
+Date context: 2026-02-25.
+Environment context: Craftoria instance on `tesseract` (Windows Prism Launcher) is current test target.
 
----
+## Current State Summary
+- Active test shaderpack in Craftoria is VanillAA with a Voxy patch (`voxy.json`, `voxy_opaque.glsl`, `voxy_translucent.glsl`) embedded in `VanillAA.zip`.
+- A key brightness mismatch was already identified and corrected in shaderpack patching: use `getLighting(interData.y)` (Embeddium-compatible lightmap sampling path) instead of `parameters.lightMap` path.
+- Remaining mismatch is structural: Voxy LOD currently has only one light id per quad and lacks per-vertex AO/brightness + per-vertex lightmap semantics used by vanilla/Embeddium.
 
-## Root Cause Analysis
+## Why Perfect Match Is Not Yet Possible
+Vanilla/Embeddium lighting path computes per-vertex values:
+- Per-vertex brightness (AO/smooth lighting multiplied by directional shade)
+- Per-vertex lightmap
+- Then raster interpolation across each quad
 
-### The lifecycle chain
+Voxy LOD currently:
+- Stores one packed light byte per quad in quad payload
+- Applies simplified face-level lighting in shader path
+- Has no per-corner AO/light payload to interpolate
 
-```
-Server packet → ClientChunkCache.replaceWithPacketData()
-  → ClientLevel.onChunkLoaded()
-      → Embeddium ChunkTracker: FLAG_HAS_BLOCK_DATA set
-  → (async) applyLightData()
-      → Embeddium ChunkTracker: FLAG_HAS_LIGHT_DATA set
-          → 3×3 neighbour check: if centre + all 8 neighbours have FLAG_ALL
-              → next frame: RenderSectionManager.onChunkAdded() fires
-                  → our mixin hook fires → ChunkBoundRenderer.addSection()
-```
+Conclusion: true parity requires extending geometry payload and lighting computation pipeline, not only shader tweaks.
 
-### Finding 1 — renderDistance +3 mismatch (systematic, always present)
+## Reference Sources (Read First)
+Use these reference files as the source of truth for behavior to match.
 
-`ClientChunkCache.inRange()` accepts chunks up to radius `max(2, renderDistance) + 3`
-from the player centre. MC loads **3 extra rings** of chunks beyond the render
-distance setting for lighting and neighbour purposes.
+### Vanilla / NeoForge references
+- `.reference/minecraft/1.21.1/decompiled/net/minecraft/client/multiplayer/ClientLevel.java`
+  - `getShade(Direction, boolean)` constants and `getShade(float,float,float,boolean)` behavior
+- `.reference/minecraft/1.21.1/decompiled/net/neoforged/neoforge/client/model/lighting/QuadLighter.java`
+  - `calculateShade(...)` formula
+  - Per-vertex processing pipeline and normal-based shading
 
-Our `shouldRender()` in `outline.vsh` tests against `negInnerSec.w`, which is set
-to `getEffectiveRenderDistance() * 16` (bare render distance, no +3).
+### Embeddium references
+- `.reference/embeddium/src/main/java/org/embeddedt/embeddium/impl/model/light/flat/FlatLightPipeline.java`
+- `.reference/embeddium/src/main/java/org/embeddedt/embeddium/impl/model/light/smooth/SmoothLightPipeline.java`
+- `.reference/embeddium/src/main/java/org/embeddedt/embeddium/impl/model/light/data/LightDataAccess.java`
+  - AO/light data packing and emissive/AO semantics
 
-Result: the 3 extra rings of chunks ARE added to ChunkBoundRenderer on load,
-but `shouldRender` clips their AABBs out — they produce no depth mask geometry.
-The depth mask ends 3 chunks (48 blocks) short of where MC actually has chunks.
+## Local Code Map (Where Changes Must Happen)
+### Geometry generation + packing
+- `src/main/java/me/cortex/voxy/client/core/rendering/building/RenderDataFactory.java`
+  - Current packed quad format generated in `Mesher.emitQuad(...)`
+  - Current 64-bit quad payload assembly in `packPartialQuadData(...)`
+- `src/main/java/me/cortex/voxy/client/core/util/ScanMesher2D.java`
+  - Merging constraints (quads are merged only when payload key is identical)
 
-**This alone accounts for a 3-chunk systematic gap, regardless of movement.**
+### GPU geometry upload assumptions
+- `src/main/java/me/cortex/voxy/client/core/rendering/section/geometry/BasicSectionGeometryManager.java`
+- `src/main/java/me/cortex/voxy/client/core/rendering/section/geometry/BasicAsyncGeometryManager.java`
+  - Current hardcoded geometry element size assumptions: 8 bytes per quad
 
-### Finding 2 — 3×3 neighbour requirement (movement-dependent gap)
+### Shader-side quad decode and shading
+- `src/main/resources/assets/voxy/shaders/lod/quad_format.glsl`
+- `src/main/resources/assets/voxy/shaders/lod/quad_util.glsl`
+- `src/main/resources/assets/voxy/shaders/lod/gl46/bindings.glsl`
+- `src/main/resources/assets/voxy/shaders/lod/gl46/quads3.vert`
+- `src/main/resources/assets/voxy/shaders/lod/gl46/quads.frag`
 
-Embeddium's `ChunkTracker.updateMerged()` requires all 8 neighbours to also have
-`FLAG_ALL` before `onChunkAdded` fires. When moving, the leading edge always has
-chunks loaded but without all neighbours yet → those chunks are not in
-ChunkBoundRenderer → gap at the leading edge.
+### Model metadata/shading flags
+- `src/main/java/me/cortex/voxy/client/core/model/ModelFactory.java`
+- `src/main/java/me/cortex/voxy/client/core/model/ModelQueries.java`
 
-This is partially unavoidable, but is **amplified** by Finding 1.
+### World data/light encoding constraints
+- `src/main/java/me/cortex/voxy/common/world/other/Mapper.java`
+- `src/main/java/me/cortex/voxy/common/world/other/Mipper.java`
+- `src/main/java/me/cortex/voxy/common/voxelization/WorldConversionFactory.java`
 
-### Finding 3 — 1-block AABB expansion missing
+## Proposed Target Architecture
+### Quad payload v2
+Move from 64-bit quad payload to 128-bit payload (2x64), keeping draw command logic the same.
+- Word A: existing geometry + ids (compatible decode for existing logic)
+- Word B: lighting payload
+  - `light4`: 4 corner packed light bytes (BL/SL nibble each)
+  - `ao4`: 4 corner AO/brightness bytes (quantized)
 
-Upstream `outline.vsh` uses `icorner-1` / `icorner+17` (1-block outward expansion)
-when computing the closest AABB corner for the distance test. This gives a 1-block
-numerical tolerance for floating-point rounding in the camera position.
+Reason: this enables per-fragment interpolation of corner AO/light, matching vanilla pipeline behavior class.
 
-Our version uses `icorner` / `icorner+16` (exact boundaries). Missing this
-contributes sub-chunk flickering at the exact boundary edge.
+### Lighting bake strategy
+Implement CPU-side corner light bake per emitted quad:
+- Use neighborhood occupancy/state to derive corner AO/brightness and corner light ids
+- Match Embeddium smooth/flat semantics as closely as feasible
+- Include model shading flags (`isShade`) and directional shade formula
 
-### Finding 4 — circular vs square (minor, already partially fixed)
+### Shader strategy
+- Decode `light4`/`ao4` in shader
+- Interpolate by quad-local coordinates
+- Sample light texture using existing `getLighting(...)`-compatible mapping
+- Multiply atlas color by interpolated AO/brightness and light sample
 
-Upstream uses circular distance (`x² + z² < r²`). MC chunk loading is square
-(Chebyshev: `max(|x|,|z|) <= r`). We already switched to Chebyshev in
-`shouldRender`, which is correct for matching MC's square pattern. No change
-needed here.
+## Implementation Phases
+## Phase 0: Baseline and instrumentation
+- Add debug toggles to visualize:
+  - AO factor only
+  - Light factor only
+  - Chunk-vs-LOD delta approximation
+- Capture baseline screenshots and logs in Craftoria with VanillAA before major refactor.
 
----
+Deliverables:
+- Repro notes and baseline captures committed in docs or notes.
 
-## Planned Fixes
+## Phase 1: Data format migration (8-byte -> 16-byte quad)
+- Introduce quad format version constants in Java and GLSL.
+- Update geometry buffer size accounting and upload arena assumptions from 8-byte element size to configurable element size.
+- Update decode helpers in `quad_format.glsl` to read new structure.
+- Keep old fields readable to avoid touching unrelated culling/draw logic initially.
 
-### Fix 1 — Correct `renderDistance` in `ChunkBoundRenderer.java`
+Deliverables:
+- Build succeeds.
+- LOD renders identically to pre-migration when using compatibility path.
 
-**File**: `src/main/java/me/cortex/voxy/client/core/rendering/ChunkBoundRenderer.java`
+## Phase 2: Per-corner light payload generation
+- Add a corner-light bake module in `RenderDataFactory` (or helper class).
+- For each emitted quad, compute and pack:
+  - 4x corner light ids
+  - 4x corner AO/brightness terms
+- Ensure mesher merge key includes lighting payload equivalence so incorrect cross-merge does not occur.
 
-Change:
-```java
-final float renderDistance = Minecraft.getInstance().options.getEffectiveRenderDistance() * 16;
-```
-To:
-```java
-// MC loads chunks at radius (renderDistance + 3) — see ClientChunkCache.calculateStorageRange().
-// The depth mask must cover this full radius, not just bare renderDistance, or a systematic
-// 3-chunk gap appears between the mask edge and where LODs start.
-final float renderDistance = (Minecraft.getInstance().options.getEffectiveRenderDistance() + 3) * 16.0f;
-```
+Deliverables:
+- Payload populated and decoded in shader (can be no-op on color initially).
+- Validation shader can display per-corner payload.
 
-This is the single most impactful fix. It closes the 3-chunk systematic gap.
+## Phase 3: Shader parity path
+- In patched and non-patched paths, use interpolated corner AO/light for final color modulation.
+- Replace simplified single-face shading path for parity mode.
+- Maintain fallback mode via compile define/config for regression isolation.
 
-### Fix 2 — Restore 1-block AABB expansion in `outline.vsh`
+Deliverables:
+- LOD/chunk boundary brightness mismatch significantly reduced.
 
-**File**: `src/main/resources/assets/voxy/shaders/chunkoutline/outline.vsh`
+## Phase 4: Semantics alignment and edge cases
+- Align constant ambient light behavior (Nether-like dimensions).
+- Validate emissive and translucent interactions.
+- Tune quantization and interpolation precision.
 
-Match upstream's corner computation exactly:
+Deliverables:
+- Stable visuals across Overworld/Nether-like contexts.
 
-```glsl
-// Expand AABB by 1 block outward (matches upstream) for numerical robustness.
-// Prevents sub-chunk flicker from FP rounding of the camera position.
-vec3 corner = vec3(
-    mix(
-        mix(ivec3(0), icorner - 1, greaterThan(icorner - 1, ivec3(0))),
-        icorner + 17,
-        lessThan(icorner + 17, ivec3(0))
-    )
-) - negInnerSec.xyz;
-```
+## Phase 5: Mip-level realism follow-up (optional but recommended)
+- Investigate `Mipper` light aggregation policy which currently uses coarse heuristics.
+- Improve distant mip light/material selection to reduce far-distance lighting drift.
 
-### Fix 3 — Remove `boundaryBuffer` (now unnecessary)
+Deliverables:
+- Better far-LOD light plausibility beyond boundary region.
 
-With Fix 1 applied, the systematic gap is closed. `boundaryBuffer` was a workaround
-for the gap; it is now harmful (causes water flickering) and should be removed.
+## Acceptance Criteria
+- Seam tests at chunk/LOD boundary under VanillAA show no obvious brightness jump in daytime and nighttime.
+- Indoor and shadowed scenes no longer show LOD consistently brighter than chunks.
+- No shader compile errors across opaque/translucent paths.
+- No geometry upload corruption or offset/count regressions.
+- Performance remains acceptable (document delta for meshing time and VRAM usage).
 
-- **`ChunkBoundRenderer.java`**: remove `boundaryBuffer` from uniform upload
-- **`outline.vsh`**: remove `boundaryBuffer` from UBO and `shouldRender` logic
-- **`VoxyNeoForgeConfig.java`**: remove `LOD_BOUNDARY_BUFFER` config entry
-- **`VoxyConfig.java`**: remove `getLodBoundaryBuffer()` delegation
+## Test Protocol
+### Local build and validation
+- `./gradlew build`
+- If available, run existing validation scripts in `scripts/` used by this repo.
 
-### Fix 4 — Consider reverting to mesh-build tracking (optional / investigative)
+### Remote Craftoria test cycle
+- Deploy mod build using existing script:
+  - `./scripts/deploy.sh Craftoria`
+- Check remote logs for shader mode and patch mode:
+  - `./scripts/logs.sh Craftoria latest`
+- Manually reload shaders in-game and compare boundary scenes.
 
-Our change to load-level tracking (Fix from previous session) ensures no holes for
-chunks loaded but not yet meshed. However, the 3×3 neighbour requirement means the
-mask boundary will always lag by ~1 chunk at the leading edge while moving.
+## Known Risks
+- Quad payload size increase impacts memory bandwidth and geometry arena capacity.
+- Mesher merge behavior may reduce quad fusion if payload contains high-variance per-corner data.
+- True parity depends on how closely CPU AO bake can mirror Embeddium neighborhood semantics.
+- Some far-distance mismatch can persist due to world mip policy (`Mipper`) even with perfect shader-side interpolation.
 
-Whether to revert or keep load-level tracking should be evaluated after Fix 1 is
-applied and tested. If movement gaps persist, reverting to mesh-build tracking
-(which naturally respects the 3×3 neighbour boundary) may give a tighter
-visual match at the cost of some "see-through" on direction changes.
+## Open Questions for Implementer
+- Whether to preserve strict 64-bit path behind a config for low-memory mode.
+- Whether AO should be stored as 8-bit linear or custom curve to better match perceived contrast.
+- Whether to include additional per-corner metadata (emissive/material flags) in v2 payload now or defer.
 
----
-
-## Implementation Order
-
-1. Apply Fix 1 (`renderDistance + 3`) — highest impact, no side effects
-2. Apply Fix 2 (1-block AABB expansion) — correctness, matches upstream
-3. Apply Fix 3 (remove `boundaryBuffer`) — cleanup after Fix 1 makes it moot
-4. Build, deploy, test in Craftoria
-5. Evaluate Fix 4 based on test results
-
----
-
-## Files to Change
-
-| File | Change |
-|------|--------|
-| `src/main/java/me/cortex/voxy/client/core/rendering/ChunkBoundRenderer.java` | `renderDistance` → `(rd + 3) * 16` |
-| `src/main/resources/assets/voxy/shaders/chunkoutline/outline.vsh` | 1-block expansion, remove boundaryBuffer |
-| `src/main/java/me/cortex/voxy/client/config/VoxyNeoForgeConfig.java` | Remove LOD_BOUNDARY_BUFFER |
-| `src/main/java/me/cortex/voxy/client/config/VoxyConfig.java` | Remove getLodBoundaryBuffer() |
-
----
-
-## Key References
-
-- `ClientChunkCache.calculateStorageRange()`: `max(2, renderDistance) + 3`
-- `ClientChunkCache.Storage.inRange()`: `Math.abs(x - centerX) <= chunkRadius`
-- `ChunkTracker.updateMerged()`: 3×3 neighbourhood `FLAG_ALL` requirement
-- Upstream `outline.vsh`: `icorner-1` / `icorner+17` expansion, circular distance
-- `EmbeddiumWorldRenderer.processChunkEvents()`: drives `onChunkAdded`/`onChunkRemoved`
+## Suggested Execution Order for Next Agent
+1. Implement Phase 1 only, commit when rendering parity is unchanged.
+2. Implement Phase 2 + payload debug views, commit.
+3. Implement Phase 3 parity shading, commit.
+4. Validate on Craftoria VanillAA scenes and iterate constants.
+5. Open follow-up task for `Mipper` semantics if far-LOD mismatch remains.

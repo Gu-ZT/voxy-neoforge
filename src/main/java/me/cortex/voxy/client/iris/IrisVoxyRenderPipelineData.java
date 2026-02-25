@@ -22,6 +22,7 @@ import net.irisshaders.iris.gl.uniform.*;
 import net.irisshaders.iris.pipeline.IrisRenderingPipeline;
 import net.irisshaders.iris.targets.RenderTarget;
 import net.irisshaders.iris.targets.RenderTargets;
+import net.irisshaders.iris.uniforms.CelestialUniforms;
 import net.irisshaders.iris.uniforms.CommonUniforms;
 import net.irisshaders.iris.uniforms.custom.CustomUniforms;
 import net.irisshaders.iris.uniforms.custom.cached.*;
@@ -394,6 +395,15 @@ public class IrisVoxyRenderPipelineData {
             }
         };
         CommonUniforms.addDynamicUniforms(uniformBuilder, FogMode.PER_FRAGMENT);
+
+        // Inject non-dynamic celestial/time uniforms that addDynamicUniforms does not provide.
+        // These are only registered if the patch's uniforms[] list contains the names.
+        uniformBuilder.uniform1f("sunAngle", CelestialUniforms::getSunAngle, null);
+        uniformBuilder.uniform1i("worldTime", () -> {
+            var level = net.minecraft.client.Minecraft.getInstance().level;
+            return level != null ? (int)(level.getDayTime() % 24000L) : 0;
+        }, null);
+
         cu.assignTo(uniformBuilder);
         cu.mapholderToPass(uniformBuilder, patch);
 

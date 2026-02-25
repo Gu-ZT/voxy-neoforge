@@ -40,6 +40,13 @@ public class MixinProgramSet implements IGetVoxyPatchData {
             if (this.patchData != null) {
                 if (this.patchData.getCompatibilityMode() == IrisShaderPatch.CompatibilityMode.DH_NATIVE_CANDIDATE) {
                     IrisShaderPatch.enableDistantHorizonsImpersonation();
+                } else if (this.patchData.getCompatibilityMode() == IrisShaderPatch.CompatibilityMode.VOXY_PATCH
+                        && this.patchData.isDhImpersonation()) {
+                    // Shader pack has a voxy.json that explicitly requests DH impersonation.
+                    // This injects #define DISTANT_HORIZONS and wires dhDepthTex/dhProjection uniforms
+                    // so the pack's deferred fog and cloud-occlusion paths work correctly for LOD geometry.
+                    IrisShaderPatch.enableDistantHorizonsImpersonation();
+                    Logger.info("Voxy DH impersonation enabled via voxy.json dhImpersonation flag");
                 }
                 Logger.info("Voxy shader compatibility mode: " + this.patchData.getCompatibilityMode());
             }
