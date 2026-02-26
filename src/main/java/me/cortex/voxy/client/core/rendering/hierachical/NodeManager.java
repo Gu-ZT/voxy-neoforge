@@ -88,7 +88,10 @@ public class NodeManager {
     public final int maxNodeCount;
     private final IntOpenHashSet topLevelNodeIds = new IntOpenHashSet();
     private final LongOpenHashSet topLevelNodes = new LongOpenHashSet();
+    private final LongOpenHashSet deferredLeafRequestRerun = new LongOpenHashSet();
     private int activeNodeRequestCount;
+    private long requestInflightDeferredCount;
+    private long requestRerunExecutedCount;
 
     private IntConsumer topLevelNodeIdAddedCallback;
     private IntConsumer topLevelNodeIdRemovedCallback;
@@ -121,6 +124,22 @@ public class NodeManager {
         this.maxNodeCount = maxNodeCount;
         this.nodeData = new NodeStore(maxNodeCount);
         this.geometryManager = geometryManager;
+    }
+
+    public long getRequestInflightDeferredCount() {
+        return this.requestInflightDeferredCount;
+    }
+
+    public long getRequestRerunExecutedCount() {
+        return this.requestRerunExecutedCount;
+    }
+
+    private void maybeRerunDeferredRequest(long pos) {
+        if (!this.deferredLeafRequestRerun.remove(pos)) {
+            return;
+        }
+        this.requestRerunExecutedCount++;
+        this.processRequest(pos);
     }
 
     private static void assertPosValid(long pos) {
@@ -868,6 +887,7 @@ public class NodeManager {
 
             //Invalidate parent
             this.invalidateNode(parentNodeId);
+            this.maybeRerunDeferredRequest(request.getPosition());
 
             //TODO: verify things here
             return;
@@ -939,6 +959,7 @@ public class NodeManager {
                 //Since this node isnt a leaf node anymore
                 this.nodeData.setAllChildrenAreLeaf(ppnId&NODE_ID_MSK, false);
             }
+            this.maybeRerunDeferredRequest(request.getPosition());
         } else if (parentNodeType==NODE_TYPE_INNER) {
             //For this, only need to add the nodes to the existing child set thing (shuffle around whatever) dont ever have to remove nodes
 
@@ -1063,6 +1084,7 @@ public class NodeManager {
 
             //Invalidate parent
             this.invalidateNode(parentNodeId);
+            this.maybeRerunDeferredRequest(request.getPosition());
         } else {
             throw new IllegalStateException();
         }
@@ -1131,7 +1153,10 @@ public class NodeManager {
 
             //Check if the node is already in-flight, if it is, dont do any processing
             if (this.nodeData.isNodeRequestInFlight(nodeId)) {
-                Logger.warn("Tried processing a node that already has a request in flight: " + nodeId + " pos: " + WorldEngine.pprintPos(pos) + " ignoring");
+                if (this.deferredLeafRequestRerun.add(pos)) {
+                    this.requestInflightDeferredCount++;
+                }
+                Logger.warn("Tried processing a node that already has a request in flight: " + nodeId + " pos: " + WorldEngine.pprintPos(pos) + " deferred");
                 return;
             }
 

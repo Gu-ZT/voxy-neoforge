@@ -124,6 +124,27 @@ Usage examples:
 - BlockableEventLoop.isNonRecoverable() InvalidMixinException
 - Any @Shadow/@Inject targeting non-existent methods
 
+### perf_latest_summary.sh
+
+**Purpose:** Reads `latest.log` and summarizes the newest `VOXY_PERF` counters for upload pressure, async copy draining, and world section array reuse.
+
+**Usage:**
+```bash
+# Local latest.log in current directory
+bash scripts/perf_latest_summary.sh
+
+# Explicit path
+bash scripts/perf_latest_summary.sh /path/to/logs/latest.log
+```
+
+**Expected output sections:**
+- `[UPLOAD_STREAM]`
+  - `remaining_bytes`, `threshold_bytes`, `glfinish_stalls`, `backpressure_observations`
+- `[ASYNC_NODE]`
+  - `max_copy_batch`, `max_copy_dispatched_per_tick`, `pending_copy_remaining`, `copy_budget_per_tick`
+- `[WORLD_SECTION_CACHE]`
+  - `hit_pct`, `hits`, `misses`, `rejects`
+
 ## Validation Workflow
 
 ### Before Creating New Mixin

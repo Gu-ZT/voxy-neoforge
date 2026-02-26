@@ -1,185 +1,242 @@
-# Voxy LOD Lighting Parity Refactor Plan
+# Voxy Performance Handoff Plan: Async Copy Spike Elimination
 
-## Scope
-This document is a handoff plan for implementing chunk-parity LOD lighting in this branch.
-Goal: make Voxy LOD shading match vanilla/Embeddium chunk shading as closely as possible under Iris shader packs (including VanillAA).
+## Context
+Date context: 2026-02-26
 
-Date context: 2026-02-25.
-Environment context: Craftoria instance on `tesseract` (Windows Prism Launcher) is current test target.
+This branch has already landed high-ROI performance improvements:
+- `WorldSection` array reuse moved to bounded non-allocating queue, with `VOXY_PERF world_section_cache` metrics.
+- `UploadStream` coherent path + pressure instrumentation added, with `VOXY_PERF upload_stream` metrics.
+- Mesh generation limiter now gates on upload pressure.
+- `AsyncNodeManager` now emits `VOXY_PERF async_node` and has copy-count-based sync wait threshold.
 
-## Current State Summary
-- Active test shaderpack in Craftoria is VanillAA with a Voxy patch (`voxy.json`, `voxy_opaque.glsl`, `voxy_translucent.glsl`) embedded in `VanillAA.zip`.
-- A key brightness mismatch was already identified and corrected in shaderpack patching: use `getLighting(interData.y)` (Embeddium-compatible lightmap sampling path) instead of `parameters.lightMap` path.
-- Remaining mismatch is structural: Voxy LOD currently has only one light id per quad and lacks per-vertex AO/brightness + per-vertex lightmap semantics used by vanilla/Embeddium.
+Current remaining gap in runtime logs is render-thread copy bursts from `AsyncNodeManager.tick(...)`, e.g.:
+- `Large amount of copies, lag will probably happen: 757`
 
-## Why Perfect Match Is Not Yet Possible
-Vanilla/Embeddium lighting path computes per-vertex values:
-- Per-vertex brightness (AO/smooth lighting multiplied by directional shade)
-- Per-vertex lightmap
-- Then raster interpolation across each quad
+These are warning-level spikes (not hard crashes) and represent the main source of frame-time outliers after previous improvements.
 
-Voxy LOD currently:
-- Stores one packed light byte per quad in quad payload
-- Applies simplified face-level lighting in shader path
-- Has no per-corner AO/light payload to interpolate
+## Problem Statement
+`AsyncNodeManager.tick(...)` currently executes geometry copy work (`multiMemcpy`) as a single large batch when results arrive.
 
-Conclusion: true parity requires extending geometry payload and lighting computation pipeline, not only shader tweaks.
+Path (current):
+1. Worker thread (`run`) publishes a `SyncResults` object with `geometryUpload` data.
+2. Render thread (`tick`) consumes all geometry copy entries in one dispatch:
+   - uploads headers + scratch data to `UploadStream`
+   - dispatches `multiMemcpy` with `copies = upload.dataUploadPoints.size()`
+3. On large bursts, a single tick does too much work and frame hitches.
 
-## Reference Sources (Read First)
-Use these reference files as the source of truth for behavior to match.
+Even with sync-wait/backpressure heuristics, this still allows high per-tick copy cost when a result set is large.
 
-### Vanilla / NeoForge references
-- `.reference/minecraft/1.21.1/decompiled/net/minecraft/client/multiplayer/ClientLevel.java`
-  - `getShade(Direction, boolean)` constants and `getShade(float,float,float,boolean)` behavior
-- `.reference/minecraft/1.21.1/decompiled/net/neoforged/neoforge/client/model/lighting/QuadLighter.java`
-  - `calculateShade(...)` formula
-  - Per-vertex processing pipeline and normal-based shading
+## Goal
+Bound render-thread copy work per tick so worst-case frame cost is predictable.
 
-### Embeddium references
-- `.reference/embeddium/src/main/java/org/embeddedt/embeddium/impl/model/light/flat/FlatLightPipeline.java`
-- `.reference/embeddium/src/main/java/org/embeddedt/embeddium/impl/model/light/smooth/SmoothLightPipeline.java`
-- `.reference/embeddium/src/main/java/org/embeddedt/embeddium/impl/model/light/data/LightDataAccess.java`
-  - AO/light data packing and emissive/AO semantics
+Target behavior:
+- No giant one-shot geometry copy dispatches.
+- Geometry copy work is drained incrementally across ticks.
+- New results can still arrive without violating state integrity.
+- Existing correctness guarantees remain intact (no geometry corruption, no stale metadata writes).
 
-## Local Code Map (Where Changes Must Happen)
-### Geometry generation + packing
-- `src/main/java/me/cortex/voxy/client/core/rendering/building/RenderDataFactory.java`
-  - Current packed quad format generated in `Mesher.emitQuad(...)`
-  - Current 64-bit quad payload assembly in `packPartialQuadData(...)`
-- `src/main/java/me/cortex/voxy/client/core/util/ScanMesher2D.java`
-  - Merging constraints (quads are merged only when payload key is identical)
+## Non-Goals
+- No redesign of `multiMemcpy` shader format.
+- No broad rewrite of node lifecycle.
+- No changes to quad payload format or mesher semantics in this task.
 
-### GPU geometry upload assumptions
-- `src/main/java/me/cortex/voxy/client/core/rendering/section/geometry/BasicSectionGeometryManager.java`
-- `src/main/java/me/cortex/voxy/client/core/rendering/section/geometry/BasicAsyncGeometryManager.java`
-  - Current hardcoded geometry element size assumptions: 8 bytes per quad
+## Success Criteria
+### Functional
+- No rendering corruption from partial copy application.
+- No crash/assertion due to pending result lifecycle.
+- No regression in LOD correctness near camera while draining.
 
-### Shader-side quad decode and shading
-- `src/main/resources/assets/voxy/shaders/lod/quad_format.glsl`
-- `src/main/resources/assets/voxy/shaders/lod/quad_util.glsl`
-- `src/main/resources/assets/voxy/shaders/lod/gl46/bindings.glsl`
-- `src/main/resources/assets/voxy/shaders/lod/gl46/quads3.vert`
-- `src/main/resources/assets/voxy/shaders/lod/gl46/quads.frag`
+### Performance
+- `Large amount of copies` warnings become rare or disappear under typical movement.
+- New metric shows bounded per-tick copy count (<= configured budget).
+- 1% low spikes attributable to copy bursts are reduced.
 
-### Model metadata/shading flags
-- `src/main/java/me/cortex/voxy/client/core/model/ModelFactory.java`
-- `src/main/java/me/cortex/voxy/client/core/model/ModelQueries.java`
+### Log-based Acceptance
+From `latest.log`, after 2-5 minutes of movement/flying:
+- `VOXY_PERF async_node` reports:
+  - `max_copy_batch` still may be high (incoming), but
+  - new `max_copy_dispatched_per_tick` stays near budget.
+- `VOXY_PERF upload_stream` remains healthy (`glfinish_stalls=0`).
+- No repeated Voxy `/ERROR` lines tied to async sync lifecycle.
 
-### World data/light encoding constraints
-- `src/main/java/me/cortex/voxy/common/world/other/Mapper.java`
-- `src/main/java/me/cortex/voxy/common/world/other/Mipper.java`
-- `src/main/java/me/cortex/voxy/common/voxelization/WorldConversionFactory.java`
+## Relevant Files
+Primary:
+- `src/main/java/me/cortex/voxy/client/core/rendering/hierachical/AsyncNodeManager.java`
+- `src/main/resources/assets/voxy/shaders/util/memcpy.comp`
 
-## Proposed Target Architecture
-### Quad payload v2
-Move from 64-bit quad payload to 128-bit payload (2x64), keeping draw command logic the same.
-- Word A: existing geometry + ids (compatible decode for existing logic)
-- Word B: lighting payload
-  - `light4`: 4 corner packed light bytes (BL/SL nibble each)
-  - `ao4`: 4 corner AO/brightness bytes (quantized)
+Secondary (read for interaction context):
+- `src/main/java/me/cortex/voxy/client/core/rendering/building/RenderGenerationService.java`
+- `src/main/java/me/cortex/voxy/client/core/rendering/util/UploadStream.java`
+- `src/main/java/me/cortex/voxy/common/world/WorldSection.java`
 
-Reason: this enables per-fragment interpolation of corner AO/light, matching vanilla pipeline behavior class.
+## Existing Runtime Signals (already in code)
+- `VOXY_PERF upload_stream ...`
+- `VOXY_PERF world_section_cache ...`
+- `VOXY_PERF async_node ...`
 
-### Lighting bake strategy
-Implement CPU-side corner light bake per emitted quad:
-- Use neighborhood occupancy/state to derive corner AO/brightness and corner light ids
-- Match Embeddium smooth/flat semantics as closely as feasible
-- Include model shading flags (`isShade`) and directional shade formula
+Leverage these and extend `VOXY_PERF async_node` for the new feature.
 
-### Shader strategy
-- Decode `light4`/`ao4` in shader
-- Interpolate by quad-local coordinates
-- Sample light texture using existing `getLighting(...)`-compatible mapping
-- Multiply atlas color by interpolated AO/brightness and light sample
+## Design Proposal
+### High-level approach: Chunked Geometry Copy Draining
+Introduce a render-thread pending drain state for geometry copies.
 
-## Implementation Phases
-## Phase 0: Baseline and instrumentation
-- Add debug toggles to visualize:
-  - AO factor only
-  - Light factor only
-  - Chunk-vs-LOD delta approximation
-- Capture baseline screenshots and logs in Craftoria with VanillAA before major refactor.
+Instead of dispatching all copies in one tick:
+- dispatch only up to `N` copies per tick (`N = copiesPerTickBudget`)
+- carry remainder into the next tick
+- finalize `SyncResults` lifecycle only when geometry copy remainder reaches zero
 
-Deliverables:
-- Repro notes and baseline captures committed in docs or notes.
+#### Core idea
+Split one `SyncResults.geometryUpload` into two conceptual parts:
+1. `copy work` (drained incrementally)
+2. `other result payload` (`tlnDelta`, scatter writes, cleaner ops, counters)
 
-## Phase 1: Data format migration (8-byte -> 16-byte quad)
-- Introduce quad format version constants in Java and GLSL.
-- Update geometry buffer size accounting and upload arena assumptions from 8-byte element size to configurable element size.
-- Update decode helpers in `quad_format.glsl` to read new structure.
-- Keep old fields readable to avoid touching unrelated culling/draw logic initially.
+Because scatter writes and cleaner ops logically depend on updated geometry state, process ordering must stay safe (see invariants below).
 
-Deliverables:
-- Build succeeds.
-- LOD renders identically to pre-migration when using compatibility path.
+### Critical invariants
+1. A `SyncResults` object must not be returned to cache until its geometry copy work is fully drained and all associated sync operations are applied.
+2. Partial copy progress must be monotonic and thread-confined to render thread.
+3. No stale pointer usage: upload ranges/headers for each partial dispatch must reflect correct subset.
+4. Ordering guarantee:
+   - if metadata/scatter writes depend on copied geometry, ensure they happen after relevant copy completion for that result set.
 
-## Phase 2: Per-corner light payload generation
-- Add a corner-light bake module in `RenderDataFactory` (or helper class).
-- For each emitted quad, compute and pack:
-  - 4x corner light ids
-  - 4x corner AO/brightness terms
-- Ensure mesher merge key includes lighting payload equivalence so incorrect cross-merge does not occur.
+## Implementation Plan
 
-Deliverables:
-- Payload populated and decoded in shader (can be no-op on color initially).
-- Validation shader can display per-corner payload.
+### Phase 1: Introduce budget and pending drain state
+In `AsyncNodeManager`:
+- Add config knobs:
+  - `voxy.asyncGeometryCopiesPerTick` (default proposed: `256`)
+  - optional `voxy.asyncGeometryMinCopiesPerTick` / `Max...` for future adaptive mode
+- Add render-thread fields:
+  - `pendingResult` (`SyncResults` or wrapper)
+  - `pendingCopyCursor` (index into copy entries)
+  - `pendingMaxCopyDispatchedPerTick` counter
+  - optional per-window counters for perf log
 
-## Phase 3: Shader parity path
-- In patched and non-patched paths, use interpolated corner AO/light for final color modulation.
-- Replace simplified single-face shading path for parity mode.
-- Maintain fallback mode via compile define/config for regression isolation.
+Data structure update likely needed in `ComputeMemoryCopy`:
+- today it uses `Int2IntOpenHashMap dataUploadPoints` + packed headers in scratch buffer.
+- for deterministic chunk iteration, create/maintain a dense ordered list of headers for dispatch (e.g., `IntArrayList headerIndices` or contiguous header slots already implied by `size()`).
 
-Deliverables:
-- LOD/chunk boundary brightness mismatch significantly reduced.
+### Phase 2: Add partial-dispatch path
+Refactor geometry copy section in `tick(...)`:
+- If no `pendingResult`, acquire from `RESULT_HANDLE` as before.
+- If pending exists, process chunk:
+  - `toDispatch = min(remainingCopies, copiesPerTickBudget)`
+  - Upload only header range `[cursor, cursor+toDispatch)` and corresponding scratch payload buffer binding.
+  - Dispatch compute for `toDispatch` workgroups.
+  - Advance cursor.
 
-## Phase 4: Semantics alignment and edge cases
-- Align constant ambient light behavior (Nether-like dimensions).
-- Validate emissive and translucent interactions.
-- Tune quantization and interpolation precision.
+Important:
+- shader expects header index to map directly by `gl_WorkGroupID.x`; if dispatching subset, either:
+  1. upload subset headers into temporary contiguous upload header block (recommended), or
+  2. add base-offset uniform to shader and index `dataCopyHeader[base + gl_WorkGroupID.x]`.
 
-Deliverables:
-- Stable visuals across Overworld/Nether-like contexts.
+Option (1) keeps shader unchanged and lowers risk.
+Option (2) reduces CPU copy of headers but changes shader interface.
 
-## Phase 5: Mip-level realism follow-up (optional but recommended)
-- Investigate `Mipper` light aggregation policy which currently uses coarse heuristics.
-- Improve distant mip light/material selection to reduce far-distance lighting drift.
+Recommended first implementation:
+- keep shader unchanged
+- build contiguous temporary header segment for each partial dispatch
 
-Deliverables:
-- Better far-LOD light plausibility beyond boundary region.
+### Phase 3: Synchronize remaining result operations safely
+Decide ordering semantics clearly:
 
-## Acceptance Criteria
-- Seam tests at chunk/LOD boundary under VanillAA show no obvious brightness jump in daytime and nighttime.
-- Indoor and shadowed scenes no longer show LOD consistently brighter than chunks.
-- No shader compile errors across opaque/translucent paths.
-- No geometry upload corruption or offset/count regressions.
-- Performance remains acceptable (document delta for meshing time and VRAM usage).
+Recommended conservative ordering:
+1. Drain all geometry copies for `pendingResult` across ticks.
+2. Only after complete copy drain, apply scatter writes / cleaner ops / callbacks for that result.
+3. Recycle `pendingResult`.
 
-## Test Protocol
-### Local build and validation
-- `./gradlew build`
-- If available, run existing validation scripts in `scripts/` used by this repo.
+This maximizes safety and avoids half-updated node/geometry metadata mismatches.
 
-### Remote Craftoria test cycle
-- Deploy mod build using existing script:
-  - `./scripts/deploy.sh Craftoria`
-- Check remote logs for shader mode and patch mode:
-  - `./scripts/logs.sh Craftoria latest`
-- Manually reload shaders in-game and compare boundary scenes.
+Tradeoff: non-copy operations for that result are delayed by several ticks when result is huge.
+Given current objective (frametime stability), acceptable.
 
-## Known Risks
-- Quad payload size increase impacts memory bandwidth and geometry arena capacity.
-- Mesher merge behavior may reduce quad fusion if payload contains high-variance per-corner data.
-- True parity depends on how closely CPU AO bake can mirror Embeddium neighborhood semantics.
-- Some far-distance mismatch can persist due to world mip policy (`Mipper`) even with perfect shader-side interpolation.
+### Phase 4: Metrics and logging extensions
+Extend `VOXY_PERF async_node` fields with:
+- `pending_copy_remaining`
+- `max_copy_dispatched_per_tick`
+- `avg_copy_dispatched_per_tick`
+- `pending_result_age_ticks` (optional)
+
+Keep log cadence at current interval.
+
+### Phase 5: Threshold retuning
+After chunking lands, retune:
+- `voxy.asyncGeometrySyncWaitCopies` (currently 320)
+- `voxy.asyncGeometryWarnCopies` (currently 500)
+
+Potentially raise warn threshold because per-tick dispatch is now bounded.
+
+## Testing Protocol
+
+### Build checks
+- `./gradlew compileJava -q`
+- `./scripts/deploy.sh`
+
+### Runtime scenario
+1. Restart client with new jar.
+2. Join server.
+3. Move rapidly/fly to force LOD churn for 3-5 minutes.
+4. Collect `latest.log`.
+
+### String search checks
+- `VOXY_PERF async_node`
+- `Large amount of copies`
+- `VOXY_PERF upload_stream`
+- `/ERROR] [Voxy/` and `RejectedExecutionException`
+
+### Expected outcomes
+- `max_copy_dispatched_per_tick` near budget (not unbounded spikes).
+- `Large amount of copies` warning frequency reduced substantially.
+- No new Voxy errors.
+
+## Risk Assessment
+
+### Risk 1: Result lifecycle bugs
+If pending result recycling is mishandled, could produce leaks/corruption.
+Mitigation:
+- strict state machine with assertions
+- explicit transitions: `ACQUIRE -> DRAIN_COPY -> APPLY_OTHER -> RECYCLE`
+
+### Risk 2: Inconsistent metadata visibility
+If scatter/cleaner runs before corresponding geometry copy completion.
+Mitigation:
+- conservative ordering (delay scatter/cleaner until copy drain done)
+
+### Risk 3: Throughput drop too far
+Too low copy budget may cause visibly slow LOD catch-up.
+Mitigation:
+- configurable budget
+- optional adaptive budget in follow-up
+
+## Rollback Plan
+If instability occurs:
+- gate chunked path behind flag (recommended while implementing):
+  - `voxy.asyncGeometryChunkedCopy=true` default true
+- fallback to prior single-dispatch behavior by toggling flag false.
+
+## Suggested Commit Sequence
+1. Refactor-only commit: introduce pending state scaffolding + no behavior change.
+2. Behavior commit: chunked copy dispatch path enabled.
+3. Metrics commit: expanded `VOXY_PERF async_node` fields and docs.
+4. Tune commit: budget defaults adjusted from test feedback.
 
 ## Open Questions for Implementer
-- Whether to preserve strict 64-bit path behind a config for low-memory mode.
-- Whether AO should be stored as 8-bit linear or custom curve to better match perceived contrast.
-- Whether to include additional per-corner metadata (emissive/material flags) in v2 payload now or defer.
+1. Keep shader unchanged with CPU header slicing, or add base-offset uniform?
+2. Apply scatter/cleaner only after full copy drain (recommended) or partially interleave?
+3. Should copy budget be static only in this task, or include adaptive mode now?
 
-## Suggested Execution Order for Next Agent
-1. Implement Phase 1 only, commit when rendering parity is unchanged.
-2. Implement Phase 2 + payload debug views, commit.
-3. Implement Phase 3 parity shading, commit.
-4. Validate on Craftoria VanillAA scenes and iterate constants.
-5. Open follow-up task for `Mipper` semantics if far-LOD mismatch remains.
+## Current Observations Snapshot (from latest reboot run)
+- Upload stream healthy:
+  - `glfinish_stalls=0`
+  - `backpressure_observations=0`
+- Async node metrics active:
+  - `max_copy_batch` observed up to `757`
+- Warning still present:
+  - `Large amount of copies, lag will probably happen: 757`
+- Voxy hard error from earlier run (`RejectedExecutionException` during shutdown race) did not recur in reboot session.
+
+## Definition of Done
+- Chunked copy drain implemented with configurable budget.
+- No render corruption or Voxy errors in 5-minute stress movement test.
+- Log evidence demonstrates bounded per-tick copy dispatch and fewer large-copy warnings.
+- `PLAN.md` checklist items updated or replaced by implementation notes for next handoff.

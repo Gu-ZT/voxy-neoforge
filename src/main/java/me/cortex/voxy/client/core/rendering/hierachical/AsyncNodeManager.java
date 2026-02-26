@@ -21,15 +21,16 @@ import me.cortex.voxy.client.core.rendering.util.UploadStream;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.util.AllocationArena;
 import me.cortex.voxy.common.util.MemoryBuffer;
-import me.cortex.voxy.common.util.UnsafeUtil;
 import me.cortex.voxy.common.world.WorldEngine;
 import me.cortex.voxy.common.world.WorldSection;
+import me.cortex.voxy.commonImpl.VoxyCommon;
 import org.lwjgl.system.MemoryUtil;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.StampedLock;
@@ -48,7 +49,13 @@ import static org.lwjgl.opengl.GL43C.*;
 // this is done off thread to reduce the amount of work done on the render thread, improving frame stability and reducing runtime overhead
 public class AsyncNodeManager {
     private static final long GEOMETRY_SYNC_WAIT_THRESHOLD_BYTES = 4L << 20; // 4MB
+    private static final int GEOMETRY_SYNC_WAIT_THRESHOLD_COPIES = Integer.getInteger("voxy.asyncGeometrySyncWaitCopies", 320);
+    private static final int GEOMETRY_COPIES_PER_TICK = Math.max(1, Integer.getInteger("voxy.asyncGeometryCopiesPerTick", 256));
+    private static final boolean GEOMETRY_CHUNKED_COPY = Boolean.parseBoolean(System.getProperty("voxy.asyncGeometryChunkedCopy", "true"));
+    private static final int LARGE_COPY_WARN_THRESHOLD = Integer.getInteger("voxy.asyncGeometryWarnCopies", 500);
     private static final long LARGE_COPY_WARN_INTERVAL_MS = 2000L;
+    private static final boolean ASYNC_NODE_PERF_LOG = VoxyCommon.isVerificationFlagOn("asyncNodePerfLog", true);
+    private static final long ASYNC_NODE_PERF_LOG_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(10);
 
     private static final VarHandle RESULT_HANDLE;
     private static final VarHandle RESULT_CACHE_1_HANDLE;
@@ -88,6 +95,17 @@ public class AsyncNodeManager {
 
     private boolean needsWaitForSync = false;
     private long nextLargeCopyWarnMs = 0;
+    private long asyncCopyBatchCount = 0;
+    private long asyncCopyElemTotal = 0;
+    private int asyncMaxCopyBatch = 0;
+    private long asyncCopyDispatchBatchCount = 0;
+    private long asyncCopyDispatchedTotal = 0;
+    private int asyncMaxCopyDispatchedPerTick = 0;
+    private long asyncSyncWaitEvents = 0;
+    private long nextPerfLogAtNanos = System.nanoTime() + ASYNC_NODE_PERF_LOG_INTERVAL_NANOS;
+    private SyncResults pendingResult = null;
+    private int pendingCopyCursor = 0;
+    private int pendingResultAgeTicks = 0;
 
     public AsyncNodeManager(int maxNodeCount, IGeometryData geometryData, RenderGenerationService renderService) {
         //Note the current implmentation of ISectionWatcher is threadsafe
@@ -375,6 +393,7 @@ public class AsyncNodeManager {
         //TODO: also note! this can be done for the processing of rendered out block models!!
         // (it might be able to also be put in this thread, maybe? but is proabably worth putting in own thread for latency reasons)
         if (this.needsWaitForSync) {
+            this.asyncSyncWaitEvents++;
             while (RESULT_HANDLE.get(this) != null && this.running) {
                 try {
                     Thread.sleep(10);
@@ -491,6 +510,7 @@ public class AsyncNodeManager {
         results.currentMaxNodeId = this.manager.getCurrentMaxNodeId();
 
         this.needsWaitForSync |= results.geometryUpload.currentElemCopyAmount * GeometryFormat.QUAD_BYTES > GEOMETRY_SYNC_WAIT_THRESHOLD_BYTES;
+        this.needsWaitForSync |= results.geometryUpload.getCopyCount() > GEOMETRY_SYNC_WAIT_THRESHOLD_COPIES;
         this.needsWaitForSync |= results.cleanerOperations.size() > 1024;
         this.needsWaitForSync |= results.scatterWriteLocationMap.size() > 4096;
         // Raised from 10 → 100: during initial world load, TLN registration adds hundreds of nodes
@@ -504,10 +524,127 @@ public class AsyncNodeManager {
     }
 
     private IntConsumer tlnAddCallback; private IntConsumer tlnRemoveCallback;
+    private void recycleResult(SyncResults results) {
+        if (!RESULT_CACHE_1_HANDLE.compareAndSet(this, null, results)) {
+            if (!RESULT_CACHE_2_HANDLE.compareAndSet(this, null, results)) {
+                throw new IllegalStateException("Could not insert result into cache");
+            }
+        }
+    }
+
+    private void recordIncomingCopies(int copies) {
+        if (copies <= 0) {
+            return;
+        }
+        this.asyncCopyBatchCount++;
+        this.asyncCopyElemTotal += copies;
+        this.asyncMaxCopyBatch = Math.max(this.asyncMaxCopyBatch, copies);
+        if (copies > LARGE_COPY_WARN_THRESHOLD) {
+            long now = System.currentTimeMillis();
+            if (now >= this.nextLargeCopyWarnMs) {
+                this.nextLargeCopyWarnMs = now + LARGE_COPY_WARN_INTERVAL_MS;
+                Logger.warn("Large amount of copies, lag will probably happen: " + copies);
+            }
+        }
+    }
+
+    private void recordDispatchedCopies(int copies) {
+        if (copies <= 0) {
+            return;
+        }
+        this.asyncCopyDispatchBatchCount++;
+        this.asyncCopyDispatchedTotal += copies;
+        this.asyncMaxCopyDispatchedPerTick = Math.max(this.asyncMaxCopyDispatchedPerTick, copies);
+    }
+
+    private boolean drainGeometryCopies(SyncResults results) {
+        var upload = results.geometryUpload;
+        int totalCopies = upload.getCopyCount();
+        if (totalCopies == 0) {
+            return true;
+        }
+
+        ((BasicSectionGeometryData) this.geometryData).ensureAccessable(upload.maxElementAccess);
+
+        int remainingCopies = totalCopies - this.pendingCopyCursor;
+        if (remainingCopies <= 0) {
+            return true;
+        }
+
+        int copiesThisTick = GEOMETRY_CHUNKED_COPY ? Math.min(remainingCopies, GEOMETRY_COPIES_PER_TICK) : remainingCopies;
+        int headerStart = this.pendingCopyCursor;
+
+        long minSourceQuad = Long.MAX_VALUE;
+        long maxSourceQuad = Long.MIN_VALUE;
+        for (int i = 0; i < copiesThisTick; i++) {
+            long headerPtr = upload.scratchHeaderBuffer.address + (long) (headerStart + i) * 16L;
+            int sourceQuad = MemoryUtil.memGetInt(headerPtr);
+            int sizeQuad = MemoryUtil.memGetInt(headerPtr + 8L);
+            if (sizeQuad > 0) {
+                minSourceQuad = Math.min(minSourceQuad, sourceQuad);
+                maxSourceQuad = Math.max(maxSourceQuad, sourceQuad + (long) sizeQuad);
+            }
+        }
+
+        this.pendingCopyCursor += copiesThisTick;
+        this.recordDispatchedCopies(copiesThisTick);
+        if (minSourceQuad == Long.MAX_VALUE) {
+            return this.pendingCopyCursor >= totalCopies;
+        }
+
+        int dataStartQuad = (int) minSourceQuad;
+        int dataQuadCount = (int) (maxSourceQuad - minSourceQuad);
+        int headerBytes = copiesThisTick * 16;
+        int dataBytes = dataQuadCount * GeometryFormat.QUAD_BYTES;
+
+        long ptr = UploadStream.INSTANCE.rawUploadAddress(headerBytes + dataBytes);
+        long streamBase = UploadStream.INSTANCE.getBaseAddress() + ptr;
+        for (int i = 0; i < copiesThisTick; i++) {
+            long srcHeader = upload.scratchHeaderBuffer.address + (long) (headerStart + i) * 16L;
+            long dstHeader = streamBase + (long) i * 16L;
+            int sourceQuad = MemoryUtil.memGetInt(srcHeader);
+            MemoryUtil.memPutInt(dstHeader, sourceQuad - dataStartQuad);
+            MemoryUtil.memPutInt(dstHeader + 4L, MemoryUtil.memGetInt(srcHeader + 4L));
+            MemoryUtil.memPutInt(dstHeader + 8L, MemoryUtil.memGetInt(srcHeader + 8L));
+            MemoryUtil.memPutInt(dstHeader + 12L, 0);
+        }
+        MemoryUtil.memCopy(upload.scratchDataBuffer.address + (long) dataStartQuad * GeometryFormat.QUAD_BYTES, streamBase + headerBytes, dataBytes);
+        UploadStream.INSTANCE.commit();
+
+        this.multiMemcpy.bind();
+        glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, UploadStream.INSTANCE.getRawBufferId(), ptr, headerBytes);
+        glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, UploadStream.INSTANCE.getRawBufferId(), ptr + headerBytes, dataBytes);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ((BasicSectionGeometryData) this.geometryData).getGeometryBuffer().id);
+
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+        glDispatchCompute(copiesThisTick, 1, 1);
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+        return this.pendingCopyCursor >= totalCopies;
+    }
+
     //Render thread synchronization
     public void tick(GlBuffer nodeBuffer, NodeCleaner cleaner) {//TODO: dont pass nodeBuffer here??, do something else thats better
-        var results = (SyncResults)RESULT_HANDLE.getAndSet(this, null);//Acquire the results
+        var results = this.pendingResult;
+        if (results == null) {
+            results = (SyncResults) RESULT_HANDLE.getAndSet(this, null);//Acquire the results
+            if (results != null) {
+                this.pendingResult = results;
+                this.pendingCopyCursor = 0;
+                this.pendingResultAgeTicks = 0;
+                this.recordIncomingCopies(results.geometryUpload.getCopyCount());
+            }
+        } else {
+            this.pendingResultAgeTicks++;
+        }
         if (results == null) {//There are no new results to process, return
+            return;
+        }
+
+        TimingStatistics.A.start();
+        boolean copyComplete = this.drainGeometryCopies(results);
+        TimingStatistics.A.stop();
+        if (!copyComplete) {
+            this.maybeLogAsyncPerf(results);
             return;
         }
 
@@ -525,43 +662,7 @@ public class AsyncNodeManager {
             //Dont need to clear as is not used again
         }
 
-        {//Update basic geometry data
-            var store = (BasicSectionGeometryData)this.geometryData;
-
-            store.setSectionCount(results.geometrySectionCount);
-
-            var upload = results.geometryUpload;
-            if (!upload.dataUploadPoints.isEmpty()) {
-                ((BasicSectionGeometryData)this.geometryData).ensureAccessable(upload.maxElementAccess);
-                TimingStatistics.A.start();
-
-                int copies = upload.dataUploadPoints.size();
-                int scratchSize = (int) upload.arena.getSize() * GeometryFormat.QUAD_BYTES;
-                long ptr = UploadStream.INSTANCE.rawUploadAddress(scratchSize + copies * 16);
-                UnsafeUtil.memcpy(upload.scratchHeaderBuffer.address, UploadStream.INSTANCE.getBaseAddress() + ptr, copies * 16L);
-                UnsafeUtil.memcpy(upload.scratchDataBuffer.address, UploadStream.INSTANCE.getBaseAddress() + ptr + copies * 16L, scratchSize);
-                UploadStream.INSTANCE.commit();//Commit the buffer
-
-                this.multiMemcpy.bind();
-                glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, UploadStream.INSTANCE.getRawBufferId(), ptr, copies*16L);
-                glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, UploadStream.INSTANCE.getRawBufferId(), ptr+copies*16L, scratchSize);
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ((BasicSectionGeometryData) this.geometryData).getGeometryBuffer().id);
-
-                if (copies > 500) {
-                    long now = System.currentTimeMillis();
-                    if (now >= this.nextLargeCopyWarnMs) {
-                        this.nextLargeCopyWarnMs = now + LARGE_COPY_WARN_INTERVAL_MS;
-                        Logger.warn("Large amount of copies, lag will probably happen: " + copies);
-                    }
-                }
-
-                glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-                glDispatchCompute(copies, 1, 1);//Execute the copies
-                glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-
-                TimingStatistics.A.stop();
-            }
-        }
+        ((BasicSectionGeometryData) this.geometryData).setSectionCount(results.geometrySectionCount);
 
         TimingStatistics.B.start();
         if (!results.scatterWriteLocationMap.isEmpty()) {//Scatter write
@@ -592,14 +693,12 @@ public class AsyncNodeManager {
 
         this.currentMaxNodeId = results.currentMaxNodeId;
         this.usedGeometryAmount = results.usedGeometry;
+        this.maybeLogAsyncPerf(results);
 
-        //Insert the result set into the cache
-        if (!RESULT_CACHE_1_HANDLE.compareAndSet(this, null, results)) {
-            //Failed to insert into result set 1, insert it into result set 2
-            if (!RESULT_CACHE_2_HANDLE.compareAndSet(this, null, results)) {
-                throw new IllegalStateException("Could not insert result into cache");
-            }
-        }
+        this.pendingResult = null;
+        this.pendingCopyCursor = 0;
+        this.pendingResultAgeTicks = 0;
+        this.recycleResult(results);
     }
 
 
@@ -756,6 +855,11 @@ public class AsyncNodeManager {
             result.geometryUpload.free();
             result.scatterWriteBuffer.free();
         }
+        if (this.pendingResult != null) {
+            this.pendingResult.geometryUpload.free();
+            this.pendingResult.scatterWriteBuffer.free();
+            this.pendingResult = null;
+        }
 
         if (RESULT_CACHE_1_HANDLE.get(this) != null) {//Clear cache 1
             var result = (SyncResults)RESULT_CACHE_1_HANDLE.getAndSet(this, null);
@@ -780,7 +884,42 @@ public class AsyncNodeManager {
     }
 
     public boolean hasWork() {
-        return this.workCounter.get()!=0 || RESULT_HANDLE.get(this) != null;
+        return this.workCounter.get()!=0 || RESULT_HANDLE.get(this) != null || this.pendingResult != null;
+    }
+
+    private void maybeLogAsyncPerf(SyncResults results) {
+        if (!ASYNC_NODE_PERF_LOG) {
+            return;
+        }
+        long now = System.nanoTime();
+        if (now < this.nextPerfLogAtNanos) {
+            return;
+        }
+        this.nextPerfLogAtNanos = now + ASYNC_NODE_PERF_LOG_INTERVAL_NANOS;
+        long avgCopies = this.asyncCopyBatchCount == 0 ? 0 : (this.asyncCopyElemTotal / this.asyncCopyBatchCount);
+        long avgDispatchedCopies = this.asyncCopyDispatchBatchCount == 0 ? 0 : (this.asyncCopyDispatchedTotal / this.asyncCopyDispatchBatchCount);
+        int resultCopyEntries = results == null ? 0 : results.geometryUpload.getCopyCount();
+        int pendingCopyRemaining = this.pendingResult == null ? 0 : Math.max(0, this.pendingResult.geometryUpload.getCopyCount() - this.pendingCopyCursor);
+        Logger.info(
+                "VOXY_PERF async_node",
+                "copy_batches=" + this.asyncCopyBatchCount,
+                "avg_copy_batch=" + avgCopies,
+                "max_copy_batch=" + this.asyncMaxCopyBatch,
+                "copy_dispatch_batches=" + this.asyncCopyDispatchBatchCount,
+                "avg_copy_dispatched_per_tick=" + avgDispatchedCopies,
+                "max_copy_dispatched_per_tick=" + this.asyncMaxCopyDispatchedPerTick,
+                "pending_copy_remaining=" + pendingCopyRemaining,
+                "pending_result_age_ticks=" + this.pendingResultAgeTicks,
+                "sync_wait_events=" + this.asyncSyncWaitEvents,
+                "result_copy_entries=" + resultCopyEntries,
+                "result_scatter_entries=" + (results == null ? 0 : results.scatterWriteLocationMap.size()),
+                "request_inflight_deferred=" + this.manager.getRequestInflightDeferredCount(),
+                "request_rerun_executed=" + this.manager.getRequestRerunExecutedCount(),
+                "copy_budget_per_tick=" + GEOMETRY_COPIES_PER_TICK,
+                "chunked_copy_enabled=" + GEOMETRY_CHUNKED_COPY,
+                "sync_wait_threshold_copies=" + GEOMETRY_SYNC_WAIT_THRESHOLD_COPIES,
+                "warn_threshold_copies=" + LARGE_COPY_WARN_THRESHOLD
+        );
     }
 
     public void worldEvent(WorldSection section, int flags, int neighborMask) {
@@ -888,6 +1027,10 @@ public class AsyncNodeManager {
         private final AllocationArena arena = new AllocationArena();
         private final Int2IntOpenHashMap dataUploadPoints = new Int2IntOpenHashMap();//Points to the header index
         {this.dataUploadPoints.defaultReturnValue(-1);}
+
+        public int getCopyCount() {
+            return this.dataUploadPoints.size();
+        }
 
 
         public void remove(int point) {

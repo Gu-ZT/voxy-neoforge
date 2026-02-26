@@ -4,6 +4,7 @@ import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import me.cortex.voxy.client.core.model.IdNotYetComputedException;
 import me.cortex.voxy.client.core.model.ModelBakerySubsystem;
+import me.cortex.voxy.client.core.rendering.util.UploadStream;
 import me.cortex.voxy.common.thread.Service;
 import me.cortex.voxy.common.thread.ServiceManager;
 import me.cortex.voxy.common.util.Pair;
@@ -77,6 +78,7 @@ public class RenderGenerationService {
     private final AtomicInteger holdingSectionCount = new AtomicInteger();//Used to limit section holding
 
     private final AtomicInteger taskQueueCount = new AtomicInteger();
+    private final AtomicInteger taskQueueReprioritizedCount = new AtomicInteger();
     private final PriorityBlockingQueue<BuildTask> taskQueue = new PriorityBlockingQueue<>(5000, (a,b)-> Long.compareUnsigned(a.priority, b.priority));
     private final StampedLock taskMapLock = new StampedLock();
     private final Long2ObjectOpenHashMap<BuildTask> taskMap = new Long2ObjectOpenHashMap<>(5000);
@@ -112,7 +114,10 @@ public class RenderGenerationService {
             return new Pair<>(() -> {
                 this.processJob(factory, seenMissed);
             }, factory::free);
-        }, 10, "Section mesh generation service", ()->modelBakery.getProcessingCount()<400||RenderGenerationService.MESH_FAILED_COUNTER.get()<500);
+        }, 10, "Section mesh generation service", () -> {
+            boolean modelBacklogOk = modelBakery.getProcessingCount() < 400 || RenderGenerationService.MESH_FAILED_COUNTER.get() < 500;
+            return modelBacklogOk && !UploadStream.shouldThrottleMeshing();
+        });
     }
 
     public void setResultConsumer(Consumer<BuiltSection> consumer) {
@@ -162,6 +167,9 @@ public class RenderGenerationService {
     //TODO: add a generated render data cache
     private void processJob(RenderDataFactory factory, IntOpenHashSet seenMissedIds) {
         BuildTask task = this.taskQueue.poll();
+        if (task == null) {
+            return;
+        }
         this.taskQueueCount.decrementAndGet();
 
         //long time = BuiltSection.getTime();
@@ -273,6 +281,17 @@ public class RenderGenerationService {
             this.taskQueue.add(task);
             this.taskQueueCount.incrementAndGet();
             this.service.execute();
+            return;
+        }
+
+        // Existing queued tasks still need to follow camera movement.
+        // Refresh priority and move it in the queue if still queued.
+        boolean wasQueued = this.taskQueue.remove(task);
+        if (wasQueued) {
+            task.updatePriority();
+            this.taskQueue.add(task);
+            this.taskQueueReprioritizedCount.incrementAndGet();
+            this.service.execute();
         }
     }
 
@@ -343,6 +362,8 @@ public class RenderGenerationService {
             this.lastChangedTime = System.currentTimeMillis();
         }
         debug.add("RSSQ/TFC: " + this.taskQueueCount.get() + "/" + MESH_FAILED_COUNTER.get());//render section service queue, Task Fail Counter
+        debug.add("RSSQ_REPRIO: " + this.taskQueueReprioritizedCount.get());
+        debug.add("US-R/T: " + UploadStream.getRemainingCapacitySnapshot() + "/" + UploadStream.getBackpressureThresholdBytes());
 
     }
 
