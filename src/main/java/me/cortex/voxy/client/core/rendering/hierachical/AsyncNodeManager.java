@@ -3,6 +3,7 @@ package me.cortex.voxy.client.core.rendering.hierachical;
 import it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap;
 import it.unimi.dsi.fastutil.ints.IntConsumer;
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
+import it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import me.cortex.voxy.client.TimingStatistics;
 import me.cortex.voxy.client.core.gl.GlBuffer;
@@ -14,6 +15,7 @@ import me.cortex.voxy.client.core.rendering.building.BuiltSection;
 import me.cortex.voxy.client.core.rendering.building.RenderGenerationService;
 import me.cortex.voxy.client.core.rendering.section.geometry.BasicAsyncGeometryManager;
 import me.cortex.voxy.client.core.rendering.section.geometry.BasicSectionGeometryData;
+import me.cortex.voxy.client.core.rendering.section.geometry.GeometryFormat;
 import me.cortex.voxy.client.core.rendering.section.geometry.IGeometryData;
 import me.cortex.voxy.client.core.rendering.util.UploadStream;
 import me.cortex.voxy.common.Logger;
@@ -45,6 +47,9 @@ import static org.lwjgl.opengl.GL43C.*;
 //An "async host" for a NodeManager, has specific synchonius entry and exit points
 // this is done off thread to reduce the amount of work done on the render thread, improving frame stability and reducing runtime overhead
 public class AsyncNodeManager {
+    private static final long GEOMETRY_SYNC_WAIT_THRESHOLD_BYTES = 4L << 20; // 4MB
+    private static final long LARGE_COPY_WARN_INTERVAL_MS = 2000L;
+
     private static final VarHandle RESULT_HANDLE;
     private static final VarHandle RESULT_CACHE_1_HANDLE;
     private static final VarHandle RESULT_CACHE_2_HANDLE;
@@ -82,6 +87,7 @@ public class AsyncNodeManager {
     private final IntOpenHashSet cleanerIdResetClear = new IntOpenHashSet();//Tells the cleaner if it needs to clear the id to 0, or reset the id to the current frame
 
     private boolean needsWaitForSync = false;
+    private long nextLargeCopyWarnMs = 0;
 
     public AsyncNodeManager(int maxNodeCount, IGeometryData geometryData, RenderGenerationService renderService) {
         //Note the current implmentation of ISectionWatcher is threadsafe
@@ -192,7 +198,7 @@ public class AsyncNodeManager {
             // to reduce latency from completed meshes to on-screen sections.
             // 10ms was too slow during initial load (sections sat in queue for 1 extra frame).
             int pendingWork = this.workCounter.get();
-            int sleepMs = pendingWork > 50 ? 1 : (pendingWork > 10 ? 3 : 10);
+            int sleepMs = pendingWork > 50 ? 3 : (pendingWork > 10 ? 6 : 10);
             try {
                 Thread.sleep(sleepMs);
             } catch (InterruptedException e) {
@@ -208,16 +214,16 @@ public class AsyncNodeManager {
         int workDone = 0;
 
         {
-            LongOpenHashSet add = null;
-            LongOpenHashSet rem = null;
+            LongLinkedOpenHashSet add = null;
+            LongLinkedOpenHashSet rem = null;
             long stamp = this.tlnLock.writeLock();
 
             if (!this.tlnAdd.isEmpty()) {
-                add = new LongOpenHashSet(this.tlnAdd);
+                add = new LongLinkedOpenHashSet(this.tlnAdd);
                 this.tlnAdd.clear();
             }
             if (!this.tlnRem.isEmpty()) {
-                rem = new LongOpenHashSet(this.tlnRem);
+                rem = new LongLinkedOpenHashSet(this.tlnRem);
                 this.tlnRem.clear();
             }
 
@@ -484,7 +490,7 @@ public class AsyncNodeManager {
         results.usedGeometry = this.geometryManager.getGeometryUsedBytes();
         results.currentMaxNodeId = this.manager.getCurrentMaxNodeId();
 
-        this.needsWaitForSync |= results.geometryUpload.currentElemCopyAmount*8L > 2L<<20;//2mb limit per frame
+        this.needsWaitForSync |= results.geometryUpload.currentElemCopyAmount * GeometryFormat.QUAD_BYTES > GEOMETRY_SYNC_WAIT_THRESHOLD_BYTES;
         this.needsWaitForSync |= results.cleanerOperations.size() > 1024;
         this.needsWaitForSync |= results.scatterWriteLocationMap.size() > 4096;
         // Raised from 10 → 100: during initial world load, TLN registration adds hundreds of nodes
@@ -530,7 +536,7 @@ public class AsyncNodeManager {
                 TimingStatistics.A.start();
 
                 int copies = upload.dataUploadPoints.size();
-                int scratchSize = (int) upload.arena.getSize() * 8;
+                int scratchSize = (int) upload.arena.getSize() * GeometryFormat.QUAD_BYTES;
                 long ptr = UploadStream.INSTANCE.rawUploadAddress(scratchSize + copies * 16);
                 UnsafeUtil.memcpy(upload.scratchHeaderBuffer.address, UploadStream.INSTANCE.getBaseAddress() + ptr, copies * 16L);
                 UnsafeUtil.memcpy(upload.scratchDataBuffer.address, UploadStream.INSTANCE.getBaseAddress() + ptr + copies * 16L, scratchSize);
@@ -542,7 +548,11 @@ public class AsyncNodeManager {
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ((BasicSectionGeometryData) this.geometryData).getGeometryBuffer().id);
 
                 if (copies > 500) {
-                    Logger.warn("Large amount of copies, lag will probably happen: " + copies);
+                    long now = System.currentTimeMillis();
+                    if (now >= this.nextLargeCopyWarnMs) {
+                        this.nextLargeCopyWarnMs = now + LARGE_COPY_WARN_INTERVAL_MS;
+                        Logger.warn("Large amount of copies, lag will probably happen: " + copies);
+                    }
                 }
 
                 glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
@@ -624,8 +634,8 @@ public class AsyncNodeManager {
     private final ConcurrentLinkedDeque<MemoryBuffer> removeBatchQueue = new ConcurrentLinkedDeque<>();
 
     private final StampedLock tlnLock = new StampedLock();
-    private final LongOpenHashSet tlnAdd = new LongOpenHashSet();
-    private final LongOpenHashSet tlnRem = new LongOpenHashSet();
+    private final LongLinkedOpenHashSet tlnAdd = new LongLinkedOpenHashSet();
+    private final LongLinkedOpenHashSet tlnRem = new LongLinkedOpenHashSet();
 
     private void addWork() {
         if (!this.running) throw new IllegalStateException("Not running");
@@ -921,8 +931,8 @@ public class AsyncNodeManager {
         }
 
         public void upload(int point, MemoryBuffer data) {
-            if ((data.size%8)!=0) throw new IllegalStateException("Data must be of size multiple 8");
-            int elemSize = (int) (data.size / 8);
+            if ((data.size % GeometryFormat.QUAD_BYTES) != 0) throw new IllegalStateException("Data must be of size multiple of quad bytes");
+            int elemSize = (int) (data.size / GeometryFormat.QUAD_BYTES);
             this.maxElementAccess = Math.max(this.maxElementAccess, point + elemSize);
             int header = this.dataUploadPoints.get(point);
             if (header != -1) {
@@ -934,7 +944,7 @@ public class AsyncNodeManager {
                 int pSize = MemoryUtil.memGetInt(headerPtr+8L);//Previous size
                 if (pSize == elemSize) {
                     //The data we are replacing is the same size, so just overwrite it, this is the easiest
-                    data.cpyTo(this.scratchDataBuffer.address+MemoryUtil.memGetInt(headerPtr)*8L);
+                    data.cpyTo(this.scratchDataBuffer.address + (long) MemoryUtil.memGetInt(headerPtr) * GeometryFormat.QUAD_BYTES);
                 } else {
                     //Dealloc
                     if (this.arena.free(MemoryUtil.memGetInt(headerPtr)) != pSize) {
@@ -946,7 +956,7 @@ public class AsyncNodeManager {
 
                     int alloc = this.allocScratchDataPos(elemSize);//New allocation position
                     //Copy data into position
-                    data.cpyTo(this.scratchDataBuffer.address+alloc*8L);
+                    data.cpyTo(this.scratchDataBuffer.address + (long) alloc * GeometryFormat.QUAD_BYTES);
 
                     //Update the header
                     MemoryUtil.memPutInt(headerPtr, alloc);
@@ -973,7 +983,7 @@ public class AsyncNodeManager {
 
                 int alloc = this.allocScratchDataPos(elemSize);//New allocation position
                 //Copy data into position
-                data.cpyTo(this.scratchDataBuffer.address+alloc*8L);
+                data.cpyTo(this.scratchDataBuffer.address + (long) alloc * GeometryFormat.QUAD_BYTES);
 
                 //Set header data
                 MemoryUtil.memPutInt(headerPtr, alloc);
@@ -985,9 +995,9 @@ public class AsyncNodeManager {
         //This is done here as it enables easily doing scratch data resizing
         private int allocScratchDataPos(int size) {
             int pos = (int) this.arena.alloc(size);
-            if (this.scratchDataBuffer.size <= (pos+size)*8L) {
+            if (this.scratchDataBuffer.size <= (long) (pos + size) * GeometryFormat.QUAD_BYTES) {
                 //We must resize :cri:
-                long newSize = Math.max(this.scratchDataBuffer.size*2, (pos+size)*8L);
+                long newSize = Math.max(this.scratchDataBuffer.size * 2, (long) (pos + size) * GeometryFormat.QUAD_BYTES);
                 Logger.info("Resizing scratch data buffer to: " + newSize);
                 var newScratch = new MemoryBuffer(newSize);
                 this.scratchDataBuffer.cpyTo(newScratch.address);

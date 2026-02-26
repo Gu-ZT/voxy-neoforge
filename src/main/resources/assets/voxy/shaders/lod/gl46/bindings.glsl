@@ -22,7 +22,7 @@ layout(binding = BLOCK_MODEL_TEXTURE_BINDING) uniform sampler2D blockModelAtlas;
 
 
 #ifndef Quad
-#define Quad ivec2
+#define Quad uvec4
 #endif
 #ifdef QUAD_BUFFER_BINDING
 layout(binding = QUAD_BUFFER_BINDING, std430) readonly restrict buffer QuadBuffer {
@@ -106,4 +106,3 @@ vec4 getLighting(uint index) {
     return texture(lightSampler, clamp((vec2((i2>>4)&0xF, i2&0xF)) / 16.0, vec2(0.5f/16.0f), vec2(15.5f/16.0f)));
 }
 #endif
-

@@ -3,6 +3,7 @@ package me.cortex.voxy.client.core.rendering.building;
 import me.cortex.voxy.client.core.model.IdNotYetComputedException;
 import me.cortex.voxy.client.core.model.ModelFactory;
 import me.cortex.voxy.client.core.model.ModelQueries;
+import me.cortex.voxy.client.core.rendering.section.geometry.GeometryFormat;
 import me.cortex.voxy.client.core.util.ScanMesher2D;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.util.MemoryBuffer;
@@ -31,9 +32,12 @@ public class RenderDataFactory {
     // since fluid states are explicitly overlays over the base block
     // can do funny stuff like double rendering
 
-    // Track block IDs that have been logged as missing to avoid log spam.
+    // Track missing models with summary-only logging to avoid worker-thread log storms.
     // Must be thread-safe: accessed concurrently from multiple RenderDataFactory worker threads.
     private static final java.util.Set<Integer> LOGGED_MISSING_BLOCKS = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static final long MISSING_MODEL_SUMMARY_INTERVAL_MS = 5_000L;
+    private static final java.util.concurrent.atomic.AtomicInteger MISSING_MODEL_EVENT_COUNT = new java.util.concurrent.atomic.AtomicInteger();
+    private static final java.util.concurrent.atomic.AtomicLong NEXT_MISSING_MODEL_SUMMARY_MS = new java.util.concurrent.atomic.AtomicLong(0);
 
     private final WorldEngine world;
     private final ModelFactory modelMan;
@@ -51,7 +55,7 @@ public class RenderDataFactory {
     //TODO: emit directly to memory buffer instead of long arrays
 
     //Each axis gets a max quad count of 2^16 (65536 quads) since that is the max the basic geometry manager can handle
-    private final MemoryBuffer quadBuffer = new MemoryBuffer(8*(8*(1<<16)));//6 faces + dual direction + translucents
+    private final MemoryBuffer quadBuffer = new MemoryBuffer((long) GeometryFormat.QUAD_BYTES * (8 * (1 << 16)));//6 faces + dual direction + translucents
     private final long quadBufferPtr = this.quadBuffer.address;
     private final int[] quadCounters = new int[8];
 
@@ -148,8 +152,10 @@ public class RenderDataFactory {
 
 
             int bufferIdx = type+(type==2?face:0);//Translucent, double side, directional
-            long bufferOffset = (RenderDataFactory.this.quadCounters[bufferIdx]++)*8L + bufferIdx*8L*(1<<16);
+            long bufferOffset = (long) (RenderDataFactory.this.quadCounters[bufferIdx]++) * GeometryFormat.QUAD_BYTES
+                    + (long) bufferIdx * GeometryFormat.QUAD_BYTES * (1 << 16);
             MemoryUtil.memPutLong(RenderDataFactory.this.quadBufferPtr + bufferOffset, quad);
+            MemoryUtil.memPutLong(RenderDataFactory.this.quadBufferPtr + bufferOffset + 8L, 0L);
 
 
             //Update AABB bounds
@@ -199,8 +205,17 @@ public class RenderDataFactory {
     private int getModelIdSafe(int blockId) {
         if (blockId == 0) return 0;
         if (!this.modelMan.hasModelForBlockId(blockId)) {
-            if (LOGGED_MISSING_BLOCKS.add(blockId)) {
-                Logger.warn("Missing model for neighbor block ID " + blockId + " - treating as air");
+            MISSING_MODEL_EVENT_COUNT.incrementAndGet();
+            LOGGED_MISSING_BLOCKS.add(blockId);
+            long now = System.currentTimeMillis();
+            long next = NEXT_MISSING_MODEL_SUMMARY_MS.get();
+            if (now >= next && NEXT_MISSING_MODEL_SUMMARY_MS.compareAndSet(next, now + MISSING_MODEL_SUMMARY_INTERVAL_MS)) {
+                int events = MISSING_MODEL_EVENT_COUNT.getAndSet(0);
+                if (events > 0) {
+                    Logger.warn("Missing model summary: " + events
+                            + " neighbor misses in last " + (MISSING_MODEL_SUMMARY_INTERVAL_MS / 1000) + "s"
+                            + " (" + LOGGED_MISSING_BLOCKS.size() + " unique IDs total, treating as air)");
+                }
             }
             return 0;
         }
@@ -1715,13 +1730,17 @@ public class RenderDataFactory {
         }
 
         int[] offsets = new int[8];
-        var buff = new MemoryBuffer(this.quadCount * 8L);
+        var buff = new MemoryBuffer((long) this.quadCount * GeometryFormat.QUAD_BYTES);
         long ptr = buff.address;
         int coff = 0;
         for (int buffer = 0; buffer < 8; buffer++) {// translucent, double sided quads, 6 faces
             offsets[buffer] = coff;
             int size = this.quadCounters[buffer];
-            UnsafeUtil.memcpy(this.quadBufferPtr + (buffer*(8*(1<<16))), ptr + coff*8L, (size* 8L));
+            UnsafeUtil.memcpy(
+                    this.quadBufferPtr + ((long) buffer * GeometryFormat.QUAD_BYTES * (1 << 16)),
+                    ptr + (long) coff * GeometryFormat.QUAD_BYTES,
+                    (long) size * GeometryFormat.QUAD_BYTES
+            );
             coff += size;
         }
 

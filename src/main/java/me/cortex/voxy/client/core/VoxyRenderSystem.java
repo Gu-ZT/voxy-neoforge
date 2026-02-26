@@ -153,7 +153,7 @@ public class VoxyRenderSystem {
                     maxSec = 7;
                 }
 
-                this.renderDistanceTracker = new RenderDistanceTracker(200,
+                this.renderDistanceTracker = new RenderDistanceTracker(20,
                         minSec,
                         maxSec,
                         this.nodeManager::addTopLevel,
@@ -451,13 +451,43 @@ public class VoxyRenderSystem {
             //Tick upload stream (this is ok to do here as upload ticking is just memory management)
             UploadStream.INSTANCE.tick();
 
+            this.renderGen.setPriorityOrigin(viewport.cameraX, viewport.cameraY, viewport.cameraZ);
+
+            // Keep TLN enqueue pressure bounded so quick camera turns don't flood CPU with
+            // immediate far-ring expansion work.
+            int fps = Math.max(1, Minecraft.getInstance().getFps());
+            int meshQueue = this.renderGen.getTaskCount();
+            int modelQueue = this.modelService.getProcessingCount();
+            int tlnRate;
+            if (fps < 35) {
+                tlnRate = 8;
+            } else if (fps < 50) {
+                tlnRate = 12;
+            } else if (meshQueue > 1500 || modelQueue > 300) {
+                tlnRate = 16;
+            } else if (meshQueue > 500 || modelQueue > 100) {
+                tlnRate = 24;
+            } else {
+                tlnRate = 32;
+            }
+            this.renderDistanceTracker.setProcessRate(tlnRate);
+
             while (this.renderDistanceTracker.setCenterAndProcess(viewport.cameraX, viewport.cameraZ) && VoxyClient.isFrexActive());//While FF is active, run until everything is processed
             TimingStatistics.H.start();
-            //Done here as is allows less gl state resetup
-            // Use a larger bake budget during initial load (many pending models) to fill LODs
-            // faster. Once the queue drains below 50 pending models, drop to 2ms to stay
-            // frame-budget-friendly. Frex path always runs until empty.
-            long modelBakeBudget = this.modelService.getProcessingCount() > 50 ? 10_000_000L : 2_000_000L;
+            // Keep model baking frame-budget aware to avoid startup CPU spikes.
+            int pendingModels = modelQueue;
+            long modelBakeBudget;
+            if (fps < 35) {
+                modelBakeBudget = 300_000L;
+            } else if (fps < 50) {
+                modelBakeBudget = 600_000L;
+            } else if (pendingModels > 200) {
+                modelBakeBudget = 1_500_000L;
+            } else if (pendingModels > 50) {
+                modelBakeBudget = 1_000_000L;
+            } else {
+                modelBakeBudget = 600_000L;
+            }
             do { this.modelService.tick(modelBakeBudget); } while (VoxyClient.isFrexActive() && !this.modelService.areQueuesEmpty());
             TimingStatistics.H.stop();
         }

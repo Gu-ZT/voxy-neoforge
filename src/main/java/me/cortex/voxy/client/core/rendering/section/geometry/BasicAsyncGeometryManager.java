@@ -17,7 +17,7 @@ import java.util.function.Consumer;
 public class BasicAsyncGeometryManager implements IGeometryManager {
     public static final int SECTION_METADATA_SIZE = 32;
 
-    private static final long GEOMETRY_ELEMENT_SIZE = 8;
+    private static final long GEOMETRY_ELEMENT_SIZE = GeometryFormat.QUAD_BYTES;
     private final HierarchicalBitSet allocationSet;
     private final AllocationArena allocationHeap = new AllocationArena();
     private final ObjectArrayList<SectionMeta> sectionMetadata = new ObjectArrayList<>(1<<15);

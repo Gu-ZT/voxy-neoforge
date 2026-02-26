@@ -1,79 +1,46 @@
-#ifdef GL_ARB_gpu_shader_int64
-#define Quad uint64_t
+#define QUAD_FORMAT_VERSION 2u
+#define QUAD_WORD_COUNT 2u
 
-#define Eu32(data, amountBits, shift) (uint((data)>>(shift))&((1u<<(amountBits))-1))
+#ifndef Quad
+#define Quad uvec4
+#endif
 
-vec3 extractPos(uint64_t quad) {
-    //TODO: pull out the majic constants into #defines (specifically the shift amount)
-    return vec3(Eu32(quad, 5, 21), Eu32(quad, 5, 16), Eu32(quad, 5, 11));
-}
-
-ivec2 extractSize(uint64_t quad) {
-    return ivec2(Eu32(quad, 4, 3), Eu32(quad, 4, 7)) + ivec2(1);//the + 1 is cause you cant actually have a 0 size quad
-}
-
-uint extractFace(uint64_t quad) {
-    return Eu32(quad, 3, 0);
-}
-
-uint extractStateId(uint64_t quad) {
-    return Eu32(quad, 16, 26);
-}
-
-uint extractBiomeId(uint64_t quad) {
-    return Eu32(quad, 9, 46);
-}
-
-uint extractLightId(uint64_t quad) {
-    return Eu32(quad, 8, 55);
-}
-
-bool isQuadEmpty(uint64_t quad) {
-    return quad == uint64_t(0);
-}
-
-#else
-//TODO: FIXME, ivec2 swaps around the data of the x and y cause its written in little endian
-
-#define Quad ivec2
-
-//#define Eu32(data, amountBits, shift) (uint((data)>>(shift))&((1u<<(amountBits))-1))
-
-uint Eu32v(ivec2 data, int amount, int shift) {
+// Quad layout v2 (128-bit):
+//   quad.xy = legacy 64-bit word A (compatible with v1 decode)
+//   quad.zw = lighting payload word B (unused in phase 1)
+uint Eu32v2(Quad data, int amount, int shift) {
     if (shift > 31) {
         shift -= 32;
-        return (uint(data.y)>>uint(shift))&((1u<<uint(amount))-1);
+        return (data.y >> uint(shift)) & ((1u << uint(amount)) - 1u);
     } else {
-        return (uint(data.x)>>uint(shift))&((1u<<uint(amount))-1);
+        return (data.x >> uint(shift)) & ((1u << uint(amount)) - 1u);
     }
 }
 
-vec3 extractPos(ivec2 quad) {
-    return vec3(Eu32v(quad, 5, 21), Eu32v(quad, 5, 16), Eu32v(quad, 5, 11));
+vec3 extractPos(Quad quad) {
+    return vec3(Eu32v2(quad, 5, 21), Eu32v2(quad, 5, 16), Eu32v2(quad, 5, 11));
 }
 
-ivec2 extractSize(ivec2 quad) {
-    return ivec2(Eu32v(quad, 4, 3), Eu32v(quad, 4, 7)) + ivec2(1);//the + 1 is cause you cant actually have a 0 size quad
+ivec2 extractSize(Quad quad) {
+    return ivec2(Eu32v2(quad, 4, 3), Eu32v2(quad, 4, 7)) + ivec2(1);
 }
 
-uint extractFace(ivec2 quad) {
-    return Eu32v(quad, 3, 0);
+uint extractFace(Quad quad) {
+    return Eu32v2(quad, 3, 0);
 }
 
-uint extractStateId(ivec2 quad) {
-    //Eu32(quad, 20, 26);
-    return Eu32v(quad, 6, 26)|(Eu32v(quad, 14, 32)<<6);
+uint extractStateId(Quad quad) {
+    return Eu32v2(quad, 6, 26) | (Eu32v2(quad, 14, 32) << 6);
 }
 
-uint extractBiomeId(ivec2 quad) {
-    return Eu32v(quad, 9, 46);
+uint extractBiomeId(Quad quad) {
+    return Eu32v2(quad, 9, 46);
 }
 
-uint extractLightId(ivec2 quad) {
-    return Eu32v(quad, 8, 55);
+uint extractLightId(Quad quad) {
+    return Eu32v2(quad, 8, 55);
 }
 
-bool isQuadEmpty(ivec2 quad) {
-    return all(equal(quad, ivec2(0)));
+bool isQuadEmpty(Quad quad) {
+    return all(equal(quad, uvec4(0)));
 }
-#endif

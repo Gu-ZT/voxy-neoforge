@@ -21,8 +21,7 @@ public class BasicSectionGeometryData implements IGeometryData {
     public BasicSectionGeometryData(int maxSectionCount, long geometryCapacity) {
         this.maxSectionCount = maxSectionCount;
         this.sectionMetadataBuffer = new GlBuffer((long) maxSectionCount * SECTION_METADATA_SIZE);
-        //8 Cause a quad is 8 bytes
-        if ((geometryCapacity%8)!=0) {
+        if ((geometryCapacity % GeometryFormat.QUAD_BYTES) != 0) {
             throw new IllegalStateException();
         }
         long start = System.currentTimeMillis();
@@ -66,7 +65,7 @@ public class BasicSectionGeometryData implements IGeometryData {
 
     private long sparseCommitment = 0;//Tracks the current range of the allocated sparse buffer
     public void ensureAccessable(int maxElementAccess) {
-        long size = (Integer.toUnsignedLong(maxElementAccess)*8L+65535L)&~65535L;
+        long size = (Integer.toUnsignedLong(maxElementAccess) * GeometryFormat.QUAD_BYTES + 65535L) & ~65535L;
         //If we are a sparse buffer, ensure the memory upto the requested size is allocated
         if (this.geometryBuffer.isSparse()) {
             if (this.sparseCommitment < size) {//if we try to access memory outside the allocation range, allocate it

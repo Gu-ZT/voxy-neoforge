@@ -45,6 +45,9 @@ import static org.lwjgl.opengl.NVRepresentativeFragmentTest.GL_REPRESENTATIVE_FR
 //Uses MDIC to render the sections
 public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, BasicSectionGeometryData> {
     public static final Factory<MDICViewport, BasicSectionGeometryData> FACTORY = AbstractSectionRenderer.Factory.create(MDICSectionRenderer.class);
+    // Keep per-frame opaque render diagnostics off by default.
+    // Enable only with: -Dvoxy.diagRenderOpaque=true
+    private static final boolean DIAG_RENDER_OPAQUE = Boolean.getBoolean("voxy.diagRenderOpaque");
 
     private static final int TRANSLUCENT_OFFSET = 400_000;//in draw calls
     private static final int TEMPORAL_OFFSET = 500_000;//in draw calls
@@ -245,8 +248,8 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
     public void renderOpaque(MDICViewport viewport) {
         renderOpaqueFrameCount++;
         int sc = this.geometryManager.getSectionCount();
-        // Log on first call, then every 200 frames, and whenever sectionCount changes
-        if (renderOpaqueFrameCount == 1 || renderOpaqueFrameCount % 200 == 0 || sc != lastLoggedSectionCount) {
+        // High-frequency render logging is expensive; keep disabled unless explicitly requested.
+        if (DIAG_RENDER_OPAQUE && (renderOpaqueFrameCount == 1 || renderOpaqueFrameCount % 200 == 0 || sc != lastLoggedSectionCount)) {
             lastLoggedSectionCount = sc;
             Logger.info("[DIAG] MDICSectionRenderer.renderOpaque frame=" + renderOpaqueFrameCount + " sectionCount=" + sc);
         }
