@@ -12,6 +12,7 @@ import me.cortex.voxy.common.world.WorldEngine;
 import me.cortex.voxy.common.world.WorldSection;
 import me.cortex.voxy.common.world.other.Mapper;
 import me.cortex.voxy.commonImpl.VoxyCommon;
+import net.minecraft.world.level.block.Blocks;
 import org.lwjgl.system.MemoryUtil;
 
 import java.util.Arrays;
@@ -35,12 +36,16 @@ public class RenderDataFactory {
     // Track missing models with summary-only logging to avoid worker-thread log storms.
     // Must be thread-safe: accessed concurrently from multiple RenderDataFactory worker threads.
     private static final java.util.Set<Integer> LOGGED_MISSING_BLOCKS = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static final java.util.concurrent.ConcurrentHashMap<Integer, Long> MISSING_MODEL_RECHECK_AFTER_MS = new java.util.concurrent.ConcurrentHashMap<>();
     private static final long MISSING_MODEL_SUMMARY_INTERVAL_MS = 5_000L;
+    private static final long MISSING_MODEL_RECHECK_BACKOFF_MS = 10_000L;
     private static final java.util.concurrent.atomic.AtomicInteger MISSING_MODEL_EVENT_COUNT = new java.util.concurrent.atomic.AtomicInteger();
     private static final java.util.concurrent.atomic.AtomicLong NEXT_MISSING_MODEL_SUMMARY_MS = new java.util.concurrent.atomic.AtomicLong(0);
 
     private final WorldEngine world;
     private final ModelFactory modelMan;
+    private final int fallbackBlockId;
+    private volatile int cachedFallbackModelId = -1;
 
     //private final long[] sectionData = new long[32*32*32*2];
     private final long[] sectionData = new long[32*32*32*2];
@@ -196,30 +201,54 @@ public class RenderDataFactory {
     public RenderDataFactory(WorldEngine world, ModelFactory modelManager, boolean emitMeshlets) {
         this.world = world;
         this.modelMan = modelManager;
+        this.fallbackBlockId = this.world.getMapper().getIdForBlockState(Blocks.STONE.defaultBlockState());
+    }
+
+    private int getFallbackModelId() {
+        int cached = this.cachedFallbackModelId;
+        if (cached >= 0) {
+            return cached;
+        }
+
+        int resolved = 0;
+        if (this.fallbackBlockId != 0 && this.modelMan.hasModelForBlockId(this.fallbackBlockId)) {
+            resolved = this.modelMan.getModelId(this.fallbackBlockId);
+        }
+
+        this.cachedFallbackModelId = resolved;
+        return resolved;
     }
 
     /**
-     * Safely get model ID for a block, returning 0 (air) if model is not available.
-     * This prevents exceptions from missing neighbor models from failing entire sections.
+     * Safely get model ID for a block, returning a stable fallback model if unavailable.
+     * This avoids transient "holes" where missing models were previously treated as air.
      */
     private int getModelIdSafe(int blockId) {
         if (blockId == 0) return 0;
-        if (!this.modelMan.hasModelForBlockId(blockId)) {
+        if (this.modelMan.hasModelForBlockId(blockId)) {
+            return this.modelMan.getModelId(blockId);
+        }
+
+        long now = System.currentTimeMillis();
+        long recheckAfter = MISSING_MODEL_RECHECK_AFTER_MS.getOrDefault(blockId, 0L);
+        if (now >= recheckAfter) {
+            MISSING_MODEL_RECHECK_AFTER_MS.put(blockId, now + MISSING_MODEL_RECHECK_BACKOFF_MS);
             MISSING_MODEL_EVENT_COUNT.incrementAndGet();
             LOGGED_MISSING_BLOCKS.add(blockId);
-            long now = System.currentTimeMillis();
+
             long next = NEXT_MISSING_MODEL_SUMMARY_MS.get();
             if (now >= next && NEXT_MISSING_MODEL_SUMMARY_MS.compareAndSet(next, now + MISSING_MODEL_SUMMARY_INTERVAL_MS)) {
                 int events = MISSING_MODEL_EVENT_COUNT.getAndSet(0);
                 if (events > 0) {
+                    int fallbackId = this.getFallbackModelId();
                     Logger.warn("Missing model summary: " + events
-                            + " neighbor misses in last " + (MISSING_MODEL_SUMMARY_INTERVAL_MS / 1000) + "s"
-                            + " (" + LOGGED_MISSING_BLOCKS.size() + " unique IDs total, treating as air)");
+                            + " misses in last " + (MISSING_MODEL_SUMMARY_INTERVAL_MS / 1000) + "s"
+                            + " (" + LOGGED_MISSING_BLOCKS.size() + " unique IDs total, fallback model " + fallbackId + ")");
                 }
             }
-            return 0;
         }
-        return this.modelMan.getModelId(blockId);
+
+        return this.getFallbackModelId();
     }
 
     /**

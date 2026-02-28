@@ -89,6 +89,10 @@ public class NodeManager {
     private final IntOpenHashSet topLevelNodeIds = new IntOpenHashSet();
     private final LongOpenHashSet topLevelNodes = new LongOpenHashSet();
     private final LongOpenHashSet deferredLeafRequestRerun = new LongOpenHashSet();
+    private static final long REQUEST_INFLIGHT_SUMMARY_INTERVAL_MS = 5_000L;
+    private long nextRequestInflightSummaryMs;
+    private int requestInflightSummaryEvents;
+    private int requestInflightSuppressedEvents;
     private int activeNodeRequestCount;
     private long requestInflightDeferredCount;
     private long requestRerunExecutedCount;
@@ -138,8 +142,46 @@ public class NodeManager {
         if (!this.deferredLeafRequestRerun.remove(pos)) {
             return;
         }
+
+        int nodeRef = this.activeSectionMap.get(pos);
+        if (nodeRef == -1) {
+            return;
+        }
+
+        int nodeType = nodeRef & NODE_TYPE_MSK;
+        if (nodeType == NODE_TYPE_REQUEST) {
+            this.deferredLeafRequestRerun.add(pos);
+            return;
+        }
+
+        int nodeId = nodeRef & NODE_ID_MSK;
+        if (this.nodeData.isNodeRequestInFlight(nodeId)) {
+            this.deferredLeafRequestRerun.add(pos);
+            return;
+        }
+
         this.requestRerunExecutedCount++;
         this.processRequest(pos);
+    }
+
+    private void maybeLogInflightSummary() {
+        long now = System.currentTimeMillis();
+        if (now < this.nextRequestInflightSummaryMs) {
+            return;
+        }
+        this.nextRequestInflightSummaryMs = now + REQUEST_INFLIGHT_SUMMARY_INTERVAL_MS;
+
+        int unique = this.requestInflightSummaryEvents;
+        int suppressed = this.requestInflightSuppressedEvents;
+        this.requestInflightSummaryEvents = 0;
+        this.requestInflightSuppressedEvents = 0;
+
+        if (unique == 0 && suppressed == 0) {
+            return;
+        }
+        Logger.warn("Inflight request summary: deferred=" + unique
+                + " suppressed=" + suppressed
+                + " pending_reruns=" + this.deferredLeafRequestRerun.size());
     }
 
     private static void assertPosValid(long pos) {
@@ -1155,8 +1197,11 @@ public class NodeManager {
             if (this.nodeData.isNodeRequestInFlight(nodeId)) {
                 if (this.deferredLeafRequestRerun.add(pos)) {
                     this.requestInflightDeferredCount++;
+                    this.requestInflightSummaryEvents++;
+                } else {
+                    this.requestInflightSuppressedEvents++;
                 }
-                Logger.warn("Tried processing a node that already has a request in flight: " + nodeId + " pos: " + WorldEngine.pprintPos(pos) + " deferred");
+                this.maybeLogInflightSummary();
                 return;
             }
 

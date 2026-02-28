@@ -56,6 +56,12 @@ public class HierarchicalOcclusionTraverser {
     private final GlBuffer queueMetaBuffer = new GlBuffer(4*4*MAX_ITERATIONS).zero();
     private final GlBuffer scratchQueueA = new GlBuffer(MAX_QUEUE_SIZE*4).zero();
     private final GlBuffer scratchQueueB = new GlBuffer(MAX_QUEUE_SIZE*4).zero();
+    private final float[] previousPlaneNormals = new float[6 * 3];
+    private boolean hasPreviousFrameState;
+    private double previousCameraX;
+    private double previousCameraY;
+    private double previousCameraZ;
+    private float frustumMarginCarry;
 
     private static int BINDING_COUNTER = 1;
     private static final int SCENE_UNIFORM_BINDING = BINDING_COUNTER++;
@@ -166,27 +172,86 @@ public class HierarchicalOcclusionTraverser {
         nglClearNamedBufferSubData(this.topNodeIds.id, GL_R32UI, idx*4L, 4, GL_RED_INTEGER, GL_UNSIGNED_INT, SCRATCH);
     }
 
-    // CameraOverhaul applies a Z-roll to the PoseStack after LevelRenderer.renderLevel starts,
-    // so the frustumMatrix Voxy captures has no roll component. At peak strafing roll (~10 deg)
-    // the rendered view extends ~10 deg beyond the captured frustum at the screen edges, causing
-    // LOD pop-in. We compensate by expanding each frustum plane outward by a small world-space
-    // margin. The planes from FrustumIntersection (allowTestSpheres=false) are unnormalized, so
-    // we normalize before applying the bias. 16 blocks covers the roll arc at close-LOD distances;
-    // increase if pop-in returns at very high FOV or with CameraOverhaul intensity cranked up.
-    private static final float FRUSTUM_MARGIN_BLOCKS = 16.0f;
+    // Motion-adaptive frustum expansion:
+    // - Base margin handles static roll/FOV mismatch.
+    // - Extra margin is added on fast camera movement/rotation and then decays gradually
+    //   to prevent left/right edge pop while avoiding permanently over-wide culling.
+    private static final float FRUSTUM_MARGIN_BASE_BLOCKS = 16.0f;
+    private static final float FRUSTUM_MARGIN_MAX_BLOCKS = 40.0f;
+    private static final float FRUSTUM_MARGIN_LINEAR_SPEED_SCALE = 2.0f;
+    private static final float FRUSTUM_MARGIN_LINEAR_SPEED_CAP = 8.0f;
+    private static final float FRUSTUM_MARGIN_ANGULAR_SCALE = 90.0f;
+    private static final float FRUSTUM_MARGIN_ANGULAR_CAP = 16.0f;
+    private static final float FRUSTUM_MARGIN_DECAY_PER_FRAME = 1.0f;
 
-    private static void setFrustum(Viewport<?> viewport, long ptr) {
+    private static void setFrustum(Viewport<?> viewport, long ptr, float marginBlocks) {
         for (int i = 0; i < 6; i++) {
             var plane = viewport.frustumPlanes[i];
             float nx = plane.x, ny = plane.y, nz = plane.z, nw = plane.w;
             float len = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
             if (len > 1e-6f) { nx /= len; ny /= len; nz /= len; nw /= len; }
-            nw += FRUSTUM_MARGIN_BLOCKS;
+            nw += marginBlocks;
             MemoryUtil.memPutFloat(ptr, nx); ptr += 4;
             MemoryUtil.memPutFloat(ptr, ny); ptr += 4;
             MemoryUtil.memPutFloat(ptr, nz); ptr += 4;
             MemoryUtil.memPutFloat(ptr, nw); ptr += 4;
         }
+    }
+
+    private static float clamp01(float v) {
+        return Math.max(-1.0f, Math.min(1.0f, v));
+    }
+
+    private float computeFrustumMargin(Viewport<?> viewport) {
+        float dynamicMargin = FRUSTUM_MARGIN_BASE_BLOCKS;
+
+        float maxAngularDelta = 0.0f;
+        for (int i = 0; i < 6; i++) {
+            var plane = viewport.frustumPlanes[i];
+            float nx = plane.x;
+            float ny = plane.y;
+            float nz = plane.z;
+            float len = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
+            if (len > 1e-6f) {
+                nx /= len;
+                ny /= len;
+                nz /= len;
+            }
+
+            if (this.hasPreviousFrameState) {
+                int base = i * 3;
+                float dot = clamp01(nx * this.previousPlaneNormals[base]
+                        + ny * this.previousPlaneNormals[base + 1]
+                        + nz * this.previousPlaneNormals[base + 2]);
+                maxAngularDelta = Math.max(maxAngularDelta, (float) Math.acos(dot));
+            }
+
+            int base = i * 3;
+            this.previousPlaneNormals[base] = nx;
+            this.previousPlaneNormals[base + 1] = ny;
+            this.previousPlaneNormals[base + 2] = nz;
+        }
+
+        if (this.hasPreviousFrameState) {
+            double dx = viewport.cameraX - this.previousCameraX;
+            double dy = viewport.cameraY - this.previousCameraY;
+            double dz = viewport.cameraZ - this.previousCameraZ;
+            float linearSpeed = (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
+            dynamicMargin += Math.min(FRUSTUM_MARGIN_LINEAR_SPEED_CAP, linearSpeed * FRUSTUM_MARGIN_LINEAR_SPEED_SCALE);
+            dynamicMargin += Math.min(FRUSTUM_MARGIN_ANGULAR_CAP, maxAngularDelta * FRUSTUM_MARGIN_ANGULAR_SCALE);
+        }
+
+        this.previousCameraX = viewport.cameraX;
+        this.previousCameraY = viewport.cameraY;
+        this.previousCameraZ = viewport.cameraZ;
+        this.hasPreviousFrameState = true;
+
+        if (dynamicMargin >= this.frustumMarginCarry) {
+            this.frustumMarginCarry = dynamicMargin;
+        } else {
+            this.frustumMarginCarry = Math.max(dynamicMargin, this.frustumMarginCarry - FRUSTUM_MARGIN_DECAY_PER_FRAME);
+        }
+        return Math.max(FRUSTUM_MARGIN_BASE_BLOCKS, Math.min(FRUSTUM_MARGIN_MAX_BLOCKS, this.frustumMarginCarry));
     }
 
     private void uploadUniform(Viewport<?> viewport) {
@@ -207,7 +272,7 @@ public class HierarchicalOcclusionTraverser {
         //Screen space size for descending
         MemoryUtil.memPutFloat(ptr, (float) (screenspaceAreaDecreasingSize) /(viewport.width*viewport.height)); ptr += 4;
 
-        setFrustum(viewport, ptr); ptr += 4*4*6;
+        setFrustum(viewport, ptr, this.computeFrustumMargin(viewport)); ptr += 4*4*6;
 
         MemoryUtil.memPutInt(ptr, (int) (viewport.getRenderList().size()/4-1)); ptr += 4;
 

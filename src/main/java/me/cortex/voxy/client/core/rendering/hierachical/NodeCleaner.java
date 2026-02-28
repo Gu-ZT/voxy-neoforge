@@ -25,6 +25,9 @@ import static org.lwjgl.opengl.GL43C.*;
 //TODO : USE THIS IN HierarchicalOcclusionTraverser instead of other shit
 public class NodeCleaner {
     //TODO: use batch_visibility_set to clear visibility data when nodes are removed!! (TODO: nodeManager will need to forward info to this)
+    // Keep geometry resident to avoid culling-driven unload/reload thrash during camera movement.
+    private static final boolean DISABLE_GEOMETRY_CLEANUP =
+            Boolean.parseBoolean(System.getProperty("voxy.disableGeometryCleanup", "true"));
 
 
     private static final int SORTING_WORKER_SIZE = 64;
@@ -103,6 +106,9 @@ public class NodeCleaner {
 
     public void tick(GlBuffer nodeDataBuffer) {
         this.visibilityId++;
+        if (DISABLE_GEOMETRY_CLEANUP) {
+            return;
+        }
         if (this.shouldCleanGeometry()) {
             this.outputBuffer.fill(this.nodeManager.maxNodeCount - 2);//TODO: maybe dont set to zero??
 

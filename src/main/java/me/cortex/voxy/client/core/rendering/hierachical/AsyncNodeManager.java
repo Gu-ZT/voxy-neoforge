@@ -50,7 +50,8 @@ import static org.lwjgl.opengl.GL43C.*;
 public class AsyncNodeManager {
     private static final long GEOMETRY_SYNC_WAIT_THRESHOLD_BYTES = 4L << 20; // 4MB
     private static final int GEOMETRY_SYNC_WAIT_THRESHOLD_COPIES = Integer.getInteger("voxy.asyncGeometrySyncWaitCopies", 320);
-    private static final int GEOMETRY_COPIES_PER_TICK = Math.max(1, Integer.getInteger("voxy.asyncGeometryCopiesPerTick", 256));
+    // Favor frame stability during camera movement; can be overridden with -Dvoxy.asyncGeometryCopiesPerTick.
+    private static final int GEOMETRY_COPIES_PER_TICK = Math.max(1, Integer.getInteger("voxy.asyncGeometryCopiesPerTick", 128));
     private static final boolean GEOMETRY_CHUNKED_COPY = Boolean.parseBoolean(System.getProperty("voxy.asyncGeometryChunkedCopy", "true"));
     private static final int LARGE_COPY_WARN_THRESHOLD = Integer.getInteger("voxy.asyncGeometryWarnCopies", 500);
     private static final long LARGE_COPY_WARN_INTERVAL_MS = 2000L;
@@ -278,8 +279,7 @@ public class AsyncNodeManager {
 
         //Limit uploading as well as by geometry capacity being available
         // must have 50 mb of free geometry space to upload
-        // 1000 entries per cycle (was 300) to flush larger batches during initial world load.
-        for (int limit = 0; limit < 1000 && ((this.geometryCapacity-this.geometryManager.getGeometryUsedBytes())>50_000_000L); limit++) {
+        for (int limit = 0; limit < 200 && ((this.geometryCapacity-this.geometryManager.getGeometryUsedBytes())>50_000_000L); limit++) {
             var job = this.geometryUpdateQueue.poll();
             if (job == null)
                 break;
