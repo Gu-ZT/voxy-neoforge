@@ -50,6 +50,10 @@ public class RenderDistanceTracker {
         return this.tracker.process(this.processRate, this::add, this::rem)!=0;
     }
 
+    public int getPendingOperationCount() {
+        return this.tracker.pendingOperationCount();
+    }
+
     private void add(int x, int z) {
         for (int y = this.minSec; y <= this.maxSec; y++) {
             this.addTopLevelNode.accept(WorldEngine.getWorldSectionId(4, x, y, z));

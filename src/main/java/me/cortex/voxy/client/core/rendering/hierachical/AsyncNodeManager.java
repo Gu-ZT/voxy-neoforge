@@ -49,9 +49,13 @@ import static org.lwjgl.opengl.GL43C.*;
 // this is done off thread to reduce the amount of work done on the render thread, improving frame stability and reducing runtime overhead
 public class AsyncNodeManager {
     private static final long GEOMETRY_SYNC_WAIT_THRESHOLD_BYTES = 4L << 20; // 4MB
-    private static final int GEOMETRY_SYNC_WAIT_THRESHOLD_COPIES = Integer.getInteger("voxy.asyncGeometrySyncWaitCopies", 320);
-    // Favor frame stability during camera movement; can be overridden with -Dvoxy.asyncGeometryCopiesPerTick.
-    private static final int GEOMETRY_COPIES_PER_TICK = Math.max(1, Integer.getInteger("voxy.asyncGeometryCopiesPerTick", 128));
+    private static final int GEOMETRY_SYNC_WAIT_THRESHOLD_COPIES = Integer.getInteger("voxy.asyncGeometrySyncWaitCopies", 640);
+    // Favor frame stability during camera movement while keeping LOD refinement progress healthy.
+    private static final int GEOMETRY_COPIES_PER_TICK = Math.max(1, Integer.getInteger("voxy.asyncGeometryCopiesPerTick", 384));
+    private static final int GEOMETRY_COPIES_BURST_PER_TICK = Math.max(
+            GEOMETRY_COPIES_PER_TICK,
+            Integer.getInteger("voxy.asyncGeometryBurstCopiesPerTick", 1536));
+    private static final int GEOMETRY_COPY_BURST_AGE_TICKS = Math.max(1, Integer.getInteger("voxy.asyncGeometryBurstAgeTicks", 1));
     private static final boolean GEOMETRY_CHUNKED_COPY = Boolean.parseBoolean(System.getProperty("voxy.asyncGeometryChunkedCopy", "true"));
     private static final int LARGE_COPY_WARN_THRESHOLD = Integer.getInteger("voxy.asyncGeometryWarnCopies", 500);
     private static final long LARGE_COPY_WARN_INTERVAL_MS = 2000L;
@@ -217,7 +221,7 @@ public class AsyncNodeManager {
             // to reduce latency from completed meshes to on-screen sections.
             // 10ms was too slow during initial load (sections sat in queue for 1 extra frame).
             int pendingWork = this.workCounter.get();
-            int sleepMs = pendingWork > 50 ? 3 : (pendingWork > 10 ? 6 : 10);
+            int sleepMs = pendingWork > 120 ? 1 : (pendingWork > 30 ? 3 : 5);
             try {
                 Thread.sleep(sleepMs);
             } catch (InterruptedException e) {
@@ -279,7 +283,7 @@ public class AsyncNodeManager {
 
         //Limit uploading as well as by geometry capacity being available
         // must have 50 mb of free geometry space to upload
-        for (int limit = 0; limit < 200 && ((this.geometryCapacity-this.geometryManager.getGeometryUsedBytes())>50_000_000L); limit++) {
+        for (int limit = 0; limit < 512 && ((this.geometryCapacity-this.geometryManager.getGeometryUsedBytes())>50_000_000L); limit++) {
             var job = this.geometryUpdateQueue.poll();
             if (job == null)
                 break;
@@ -396,7 +400,7 @@ public class AsyncNodeManager {
             this.asyncSyncWaitEvents++;
             while (RESULT_HANDLE.get(this) != null && this.running) {
                 try {
-                    Thread.sleep(10);
+                    Thread.sleep(4);
                 } catch (InterruptedException e) {
                     throw new RuntimeException(e);
                 }
@@ -571,7 +575,11 @@ public class AsyncNodeManager {
             return true;
         }
 
-        int copiesThisTick = GEOMETRY_CHUNKED_COPY ? Math.min(remainingCopies, GEOMETRY_COPIES_PER_TICK) : remainingCopies;
+        int copyBudget = GEOMETRY_COPIES_PER_TICK;
+        if (this.pendingResultAgeTicks >= GEOMETRY_COPY_BURST_AGE_TICKS || remainingCopies > (GEOMETRY_COPIES_PER_TICK * 2)) {
+            copyBudget = GEOMETRY_COPIES_BURST_PER_TICK;
+        }
+        int copiesThisTick = GEOMETRY_CHUNKED_COPY ? Math.min(remainingCopies, copyBudget) : remainingCopies;
         int headerStart = this.pendingCopyCursor;
 
         long minSourceQuad = Long.MAX_VALUE;
@@ -913,8 +921,6 @@ public class AsyncNodeManager {
                 "sync_wait_events=" + this.asyncSyncWaitEvents,
                 "result_copy_entries=" + resultCopyEntries,
                 "result_scatter_entries=" + (results == null ? 0 : results.scatterWriteLocationMap.size()),
-                "request_inflight_deferred=" + this.manager.getRequestInflightDeferredCount(),
-                "request_rerun_executed=" + this.manager.getRequestRerunExecutedCount(),
                 "copy_budget_per_tick=" + GEOMETRY_COPIES_PER_TICK,
                 "chunked_copy_enabled=" + GEOMETRY_CHUNKED_COPY,
                 "sync_wait_threshold_copies=" + GEOMETRY_SYNC_WAIT_THRESHOLD_COPIES,

@@ -225,30 +225,7 @@ public class RenderDataFactory {
      */
     private int getModelIdSafe(int blockId) {
         if (blockId == 0) return 0;
-        if (this.modelMan.hasModelForBlockId(blockId)) {
-            return this.modelMan.getModelId(blockId);
-        }
-
-        long now = System.currentTimeMillis();
-        long recheckAfter = MISSING_MODEL_RECHECK_AFTER_MS.getOrDefault(blockId, 0L);
-        if (now >= recheckAfter) {
-            MISSING_MODEL_RECHECK_AFTER_MS.put(blockId, now + MISSING_MODEL_RECHECK_BACKOFF_MS);
-            MISSING_MODEL_EVENT_COUNT.incrementAndGet();
-            LOGGED_MISSING_BLOCKS.add(blockId);
-
-            long next = NEXT_MISSING_MODEL_SUMMARY_MS.get();
-            if (now >= next && NEXT_MISSING_MODEL_SUMMARY_MS.compareAndSet(next, now + MISSING_MODEL_SUMMARY_INTERVAL_MS)) {
-                int events = MISSING_MODEL_EVENT_COUNT.getAndSet(0);
-                if (events > 0) {
-                    int fallbackId = this.getFallbackModelId();
-                    Logger.warn("Missing model summary: " + events
-                            + " misses in last " + (MISSING_MODEL_SUMMARY_INTERVAL_MS / 1000) + "s"
-                            + " (" + LOGGED_MISSING_BLOCKS.size() + " unique IDs total, fallback model " + fallbackId + ")");
-                }
-            }
-        }
-
-        return this.getFallbackModelId();
+        return this.modelMan.getModelId(blockId);
     }
 
     /**
@@ -256,14 +233,7 @@ public class RenderDataFactory {
      * This prevents exceptions from missing fluid models from failing entire sections.
      */
     private int getFluidClientStateIdSafe(int clientBlockStateId) {
-        try {
-            return this.modelMan.getFluidClientStateId(clientBlockStateId);
-        } catch (IdNotYetComputedException e) {
-            if (LOGGED_MISSING_BLOCKS.add(clientBlockStateId | (1 << 30))) { // Use high bit to distinguish from block IDs
-                Logger.warn("Missing fluid state for client model ID " + clientBlockStateId + " - skipping fluid rendering");
-            }
-            return clientBlockStateId; // Return original model ID as fallback
-        }
+        return this.modelMan.getFluidClientStateId(clientBlockStateId);
     }
 
     private static long getQuadTyping(long metadata) {//2 bits

@@ -65,6 +65,8 @@ import static org.lwjgl.opengl.ARBIndirectParameters.GL_PARAMETER_BUFFER_BINDING
 import static org.lwjgl.opengl.GL45C.glBindTextureUnit;
 
 public class VoxyRenderSystem {
+    private static final long SPARSE_GEOMETRY_MIN_BYTES = 1024L * 1024L * 1024L; // 1GB virtual address space floor
+
     private static final boolean RENDER_LODS_IN_IRIS_SHADOW_PASS =
             System.getProperty("voxy.renderLodsInIrisShadowPass", "false").equalsIgnoreCase("true");
 
@@ -234,6 +236,7 @@ public class VoxyRenderSystem {
                 // Disabled for Embeddium compatibility - FogParameters not wired
                 // .setFogParameters(fogParameters)
                 .update();
+        this.renderGen.setPriorityOrigin(cameraX, cameraY, cameraZ);
 
         if (VoxyClient.getOcclusionDebugState()==0) {
             viewport.frameId++;
@@ -303,6 +306,7 @@ public class VoxyRenderSystem {
                     .setCamera(cameraX, cameraY, cameraZ)
                     .setScreenSize(snapshot.width, snapshot.height)
                     .update(false);
+            this.renderGen.setPriorityOrigin(cameraX, cameraY, cameraZ);
 
             this.renderShadow(viewport);
         } finally {
@@ -361,18 +365,27 @@ public class VoxyRenderSystem {
     // Cached GL state from setupViewport() so renderOpaque() avoids synchronous GL queries.
     private int cachedFramebufferId = 0;
     private int cachedViewportX = 0, cachedViewportY = 0, cachedViewportW = 0, cachedViewportH = 0;
+    private double smoothedFrameMs = 16.6;
 
     private boolean renderOpaqueFirstCall = true;
+    private int renderOpaqueNullViewportWarmupFrames = 8;
     private int setupViewportWarnCount = 0;
 
     public void renderOpaque(Viewport<?> viewport) {
         if (viewport == null) {
+            // Renderer/pipeline rebuild windows can produce a few frames without a valid viewport.
+            // Suppress diagnostics in this short warmup period to avoid false-positive noise.
+            if (this.renderOpaqueNullViewportWarmupFrames > 0) {
+                this.renderOpaqueNullViewportWarmupFrames--;
+                return;
+            }
             if (renderOpaqueFirstCall) {
                 renderOpaqueFirstCall = false;
                 Logger.warn("[DIAG] renderOpaque called with null viewport - rendering suppressed");
             }
             return;
         }
+        this.renderOpaqueNullViewportWarmupFrames = 0;
         // Only skip the opaque pass when shadow is active AND we are using the IrisVoxyRenderPipeline,
         // which has its own dedicated shadow render path (renderShadowPass).
         // For NormalRenderPipeline, Embeddium's CUTOUT hook is the sole render entry point;
@@ -451,44 +464,53 @@ public class VoxyRenderSystem {
             //Tick upload stream (this is ok to do here as upload ticking is just memory management)
             UploadStream.INSTANCE.tick();
 
-            this.renderGen.setPriorityOrigin(viewport.cameraX, viewport.cameraY, viewport.cameraZ);
+            // Adapt budgets to frame-time/backlog so we prioritize near-ring convergence
+            // without hard-capping useful throughput during stable frames.
+            long frameNs = System.nanoTime() - startTime;
+            double frameMs = Math.max(0.1, frameNs / 1_000_000.0);
+            this.smoothedFrameMs = this.smoothedFrameMs * 0.9 + frameMs * 0.1;
 
-            // Keep TLN enqueue pressure bounded so quick camera turns don't flood CPU with
-            // immediate far-ring expansion work.
-            int fps = Math.max(1, Minecraft.getInstance().getFps());
-            int meshQueue = this.renderGen.getTaskCount();
-            int modelQueue = this.modelService.getProcessingCount();
-            int tlnRate;
-            if (fps < 35) {
-                tlnRate = 8;
-            } else if (fps < 50) {
-                tlnRate = 12;
-            } else if (meshQueue > 1500 || modelQueue > 300) {
-                tlnRate = 16;
-            } else if (meshQueue > 500 || modelQueue > 100) {
-                tlnRate = 24;
-            } else {
-                tlnRate = 32;
+            int queuedMeshTasks = this.renderGen.getTaskCount();
+            int pendingRingOps = this.renderDistanceTracker.getPendingOperationCount();
+            int trackerProcessRate = 16;
+            int maxTrackerPasses = 12;
+            long trackerBudgetNs = 1_100_000L;
+            if (this.smoothedFrameMs <= 16.6) {
+                trackerProcessRate = pendingRingOps > 4500 ? 80 : (pendingRingOps > 2200 ? 56 : 32);
+                maxTrackerPasses = queuedMeshTasks > 2500 ? 64 : (queuedMeshTasks > 1200 ? 48 : 32);
+                trackerBudgetNs = pendingRingOps > 3500 ? 3_200_000L : 2_200_000L;
+            } else if (this.smoothedFrameMs <= 22.0) {
+                trackerProcessRate = pendingRingOps > 2200 ? 40 : 24;
+                maxTrackerPasses = queuedMeshTasks > 2500 ? 40 : 24;
+                trackerBudgetNs = 1_700_000L;
             }
-            this.renderDistanceTracker.setProcessRate(tlnRate);
-
-            while (this.renderDistanceTracker.setCenterAndProcess(viewport.cameraX, viewport.cameraZ) && VoxyClient.isFrexActive());//While FF is active, run until everything is processed
+            this.renderDistanceTracker.setProcessRate(trackerProcessRate);
+            long trackerStartNs = System.nanoTime();
+            for (int pass = 0; pass < maxTrackerPasses; pass++) {
+                if (System.nanoTime() - trackerStartNs >= trackerBudgetNs) {
+                    break;
+                }
+                if (!this.renderDistanceTracker.setCenterAndProcess(viewport.cameraX, viewport.cameraZ)) {
+                    break;
+                }
+            }
             TimingStatistics.H.start();
-            // Keep model baking frame-budget aware to avoid startup CPU spikes.
-            int pendingModels = modelQueue;
-            long modelBakeBudget;
-            if (fps < 35) {
-                modelBakeBudget = 300_000L;
-            } else if (fps < 50) {
-                modelBakeBudget = 600_000L;
-            } else if (pendingModels > 200) {
-                modelBakeBudget = 1_500_000L;
-            } else if (pendingModels > 50) {
-                modelBakeBudget = 1_000_000L;
+            int pendingModelTasks = this.modelService.getProcessingCount();
+            int maxModelPasses;
+            long modelBudgetNs;
+            if (this.smoothedFrameMs <= 16.6) {
+                maxModelPasses = pendingModelTasks > 1400 ? 10 : (pendingModelTasks > 500 ? 6 : 3);
+                modelBudgetNs = pendingModelTasks > 1400 ? 4_600_000L : (pendingModelTasks > 500 ? 2_800_000L : 1_400_000L);
+            } else if (this.smoothedFrameMs <= 22.0) {
+                maxModelPasses = pendingModelTasks > 900 ? 6 : (pendingModelTasks > 300 ? 4 : 2);
+                modelBudgetNs = pendingModelTasks > 900 ? 3_200_000L : (pendingModelTasks > 300 ? 2_000_000L : 1_000_000L);
             } else {
-                modelBakeBudget = 600_000L;
+                maxModelPasses = pendingModelTasks > 900 ? 4 : 2;
+                modelBudgetNs = pendingModelTasks > 900 ? 2_200_000L : 900_000L;
             }
-            do { this.modelService.tick(modelBakeBudget); } while (VoxyClient.isFrexActive() && !this.modelService.areQueuesEmpty());
+            for (int pass = 0; pass < maxModelPasses && !this.modelService.areQueuesEmpty(); pass++) {
+                this.modelService.tick(modelBudgetNs);
+            }
             TimingStatistics.H.stop();
         }
         GPUTiming.INSTANCE.marker();
@@ -708,9 +730,14 @@ public class VoxyRenderSystem {
         if (Capabilities.INSTANCE.isIntel) {
             geometryCapacity = Math.max(geometryCapacity, 1L<<30);//intel moment, force min 1gb
         }
+        if (Capabilities.INSTANCE.isNvidia && Capabilities.INSTANCE.sparseBuffer) {
+            // Sparse buffers on NVIDIA reserve virtual address space; aggressive free-VRAM limiting
+            // causes avoidable capacity thrash after pipeline rebuilds.
+            geometryCapacity = Math.max(geometryCapacity, SPARSE_GEOMETRY_MIN_BYTES);
+        }
 
         //Limit to available dedicated memory if possible
-        if (Capabilities.INSTANCE.canQueryGpuMemory) {
+        if (Capabilities.INSTANCE.canQueryGpuMemory && !(Capabilities.INSTANCE.isNvidia && Capabilities.INSTANCE.sparseBuffer)) {
             //512mb less than avalible,
             long limit = Capabilities.INSTANCE.getFreeDedicatedGpuMemory() - (long)(1.5*1024*1024*1024);//1.5gb vram buffer
             // Give a minimum of 512 mb requirement

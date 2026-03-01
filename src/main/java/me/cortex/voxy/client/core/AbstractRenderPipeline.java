@@ -12,7 +12,7 @@ import me.cortex.voxy.client.core.rendering.post.FullscreenBlit;
 import me.cortex.voxy.client.core.rendering.section.backend.AbstractSectionRenderer;
 import me.cortex.voxy.client.core.rendering.util.DepthFramebuffer;
 import me.cortex.voxy.client.core.rendering.util.DownloadStream;
-import me.cortex.voxy.common.Logger;
+import me.cortex.voxy.client.core.util.GPUTiming;
 import me.cortex.voxy.common.util.TrackedObject;
 import org.joml.Matrix4f;
 import org.lwjgl.opengl.GL30;
@@ -102,23 +102,32 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         int depthTexture = this.setup(viewport, sourceFrameBuffer, srcWidth, srcHeight);
 
         var rs = ((AbstractSectionRenderer)this.sectionRenderer);
+        GPUTiming.INSTANCE.marker();
         rs.renderOpaque(viewport);
         var occlusionDebug = VoxyClient.getOcclusionDebugState();
         if (occlusionDebug==0) {
+            GPUTiming.INSTANCE.marker();
             this.innerPrimaryWork(viewport, depthTexture);
+            GPUTiming.INSTANCE.marker();
         }
+
         if (occlusionDebug<=1) {
+            TimingStatistics.G.start();
             rs.buildDrawCalls(viewport);
+            TimingStatistics.G.stop();
         }
+
         if (this.shouldRenderTemporal(viewport)) {
             rs.renderTemporal(viewport);
         }
 
         this.postOpaquePreTranslucent(viewport);
+        GPUTiming.INSTANCE.marker();
 
         if (!this.deferTranslucency) {
             rs.renderTranslucent(viewport);
         }
+        GPUTiming.INSTANCE.marker();
 
         this.finish(viewport, sourceFrameBuffer, srcWidth, srcHeight);
         glBindFramebuffer(GL_FRAMEBUFFER, sourceFrameBuffer);
@@ -131,7 +140,7 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         glBindFramebuffer(GL30.GL_FRAMEBUFFER, targetFb);
 
         this.depthCopy.bind();
-        int depthTexture = getDepthAttachmentTextureId(sourceFrameBuffer);
+        int depthTexture = glGetNamedFramebufferAttachmentParameteri(sourceFrameBuffer, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME);
         glBindTextureUnit(0, depthTexture);
         glBindSampler(0, DEPTH_SAMPLER);
         glUniform2f(1,((float)width)/srcWidth, ((float)height)/srcHeight);
@@ -172,37 +181,10 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         glStencilFunc(GL_EQUAL, 1, 0xFF);
     }
 
-    private static boolean depthTexDiagLogged = false;
-    private static int getDepthAttachmentTextureId(int framebuffer) {
-        // Iris / MC can attach depth as GL_DEPTH_STENCIL_ATTACHMENT. Query both to be robust.
-        int depthTexture = glGetNamedFramebufferAttachmentParameteri(framebuffer, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME);
-        if (depthTexture != 0) {
-            if (!depthTexDiagLogged) {
-                depthTexDiagLogged = true;
-                Logger.info("[DIAG] getDepthAttachmentTextureId(fb=" + framebuffer + ") → depthTex=" + depthTexture + " (via GL_DEPTH_ATTACHMENT)");
-            }
-            return depthTexture;
-        }
-
-        depthTexture = glGetNamedFramebufferAttachmentParameteri(framebuffer, GL_DEPTH_STENCIL_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME);
-        if (depthTexture != 0) {
-            if (!depthTexDiagLogged) {
-                depthTexDiagLogged = true;
-                Logger.info("[DIAG] getDepthAttachmentTextureId(fb=" + framebuffer + ") → depthTex=" + depthTexture + " (via GL_DEPTH_STENCIL_ATTACHMENT)");
-            }
-            return depthTexture;
-        }
-
-        // No depth attachment found; return 0 so subsequent GL errors are obvious in logs/debug output.
-        if (!depthTexDiagLogged) {
-            depthTexDiagLogged = true;
-            Logger.warn("[DIAG] getDepthAttachmentTextureId(fb=" + framebuffer + ") → 0 (no depth attachment found! LODs will be invisible)");
-        }
-        return 0;
-    }
-
     private static final long SCRATCH = MemoryUtil.nmemAlloc(4*4*4);
     protected static void transformBlitDepth(FullscreenBlit blitShader, int srcDepthTex, int dstFB, Viewport<?> viewport, Matrix4f targetTransform) {
+        // at this point the dst frame buffer doesn't have a stencil attachment so we don't need to keep the stencil test on for the blit
+        // in the worst case the dstFB does have a stencil attachment causing this pass to become 'corrupted'
         glDisable(GL_STENCIL_TEST);
         glBindFramebuffer(GL30.GL_FRAMEBUFFER, dstFB);
 
@@ -210,19 +192,11 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         glBindTextureUnit(0, srcDepthTex);
         new Matrix4f(viewport.MVP).invert().getToAddress(SCRATCH);
         nglUniformMatrix4fv(1, 1, false, SCRATCH);//inverse fromProjection
-        targetTransform.getToAddress(SCRATCH);
+        targetTransform.getToAddress(SCRATCH);//new Matrix4f(tooProjection).mul(vp.modelView).get(data);
         nglUniformMatrix4fv(2, 1, false, SCRATCH);//tooProjection
 
-        // Use GL_LESS so Voxy's reprojected depth only wins where it is strictly closer than
-        // whatever MC already wrote. At the water/LOD boundary MC's water depth is already in
-        // the depth buffer; the double-projection (MC→Voxy→MC) introduces sub-ULP error that
-        // can make Voxy's value marginally smaller under GL_LEQUAL, overwriting MC's depth by
-        // epsilon. TAA then sees the depth flicker every frame at that boundary, producing the
-        // flickering-behind-water artefact at chunk borders. GL_LESS prevents the overwrite.
         glEnable(GL_DEPTH_TEST);
-        glDepthFunc(GL_LESS);
         blitShader.blit();
-        glDepthFunc(GL_LEQUAL);
         glDisable(GL_STENCIL_TEST);
         glDisable(GL_DEPTH_TEST);
     }

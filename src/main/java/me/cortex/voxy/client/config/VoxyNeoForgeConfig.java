@@ -20,57 +20,69 @@ import net.neoforged.neoforge.common.ModConfigSpec;
  */
 @EventBusSubscriber(modid = "voxy", bus = EventBusSubscriber.Bus.MOD)
 public class VoxyNeoForgeConfig {
+    private static final boolean DEFAULT_ENABLED = true;
+    private static final boolean DEFAULT_ENABLE_RENDERING = true;
+    private static final boolean DEFAULT_INGEST_ENABLED = true;
+    private static final int DEFAULT_SECTION_RENDER_DISTANCE = 16;
+    private static final int DEFAULT_SERVICE_THREADS = Math.max((int) (CpuLayout.getCoreCount() / 1.5), 1);
+    private static final double DEFAULT_SUB_DIVISION_SIZE = 64.0;
+    private static final boolean DEFAULT_USE_ENVIRONMENTAL_FOG = true;
+    private static final boolean DEFAULT_SHADER_PACK_FOG_OVERRIDE = true;
+    private static final boolean DEFAULT_SHADER_PACK_FALLBACK_PATCH = true;
+    private static final boolean DEFAULT_DONT_USE_EMBEDDIUM_BUILDER_THREADS = false;
+    private static final int DEFAULT_EARTH_CURVE_RATIO = 0;
+    private static final boolean DEFAULT_RENDER_STATISTICS = false;
 
     private static final ModConfigSpec.Builder BUILDER = new ModConfigSpec.Builder();
 
     // General settings
     static final ModConfigSpec.BooleanValue ENABLED = BUILDER
             .comment("Enable Voxy LOD rendering system")
-            .define("enabled", true);
+            .define("enabled", DEFAULT_ENABLED);
 
     static final ModConfigSpec.BooleanValue ENABLE_RENDERING = BUILDER
             .comment("Enable LOD terrain rendering (can be disabled while keeping data ingestion)")
-            .define("enableRendering", true);
+            .define("enableRendering", DEFAULT_ENABLE_RENDERING);
 
     static final ModConfigSpec.BooleanValue INGEST_ENABLED = BUILDER
             .comment("Enable automatic chunk data ingestion for LOD generation")
-            .define("ingestEnabled", true);
+            .define("ingestEnabled", DEFAULT_INGEST_ENABLED);
 
     // Performance settings
     static final ModConfigSpec.IntValue SECTION_RENDER_DISTANCE = BUILDER
             .comment("LOD section render distance (multiplied by 32 for actual chunk distance)",
                      "Example: 16 = 512 chunks render distance")
-            .defineInRange("sectionRenderDistance", 16, 2, 64);
+            .defineInRange("sectionRenderDistance", DEFAULT_SECTION_RENDER_DISTANCE, 2, 64);
 
     static final ModConfigSpec.IntValue SERVICE_THREADS = BUILDER
             .comment("Number of background threads for LOD processing",
                      "Default is based on CPU core count.")
-            .defineInRange("serviceThreads", Math.max((int)(CpuLayout.getCoreCount() / 1.5), 1), 1, CpuLayout.getCoreCount());
+            .defineInRange("serviceThreads", DEFAULT_SERVICE_THREADS, 1, CpuLayout.getCoreCount());
 
     static final ModConfigSpec.DoubleValue SUB_DIVISION_SIZE = BUILDER
             .comment("Subdivision size for LOD rendering (28-256)",
                      "Lower = more detailed LODs but more GPU load")
-            .defineInRange("subDivisionSize", 64.0, 28.0, 256.0);
+            .defineInRange("subDivisionSize", DEFAULT_SUB_DIVISION_SIZE, 28.0, 256.0);
 
     // Visual settings
     static final ModConfigSpec.BooleanValue USE_ENVIRONMENTAL_FOG = BUILDER
             .comment("Apply environmental fog to LOD terrain")
-            .define("useEnvironmentalFog", true);
+            .define("useEnvironmentalFog", DEFAULT_USE_ENVIRONMENTAL_FOG);
 
     static final ModConfigSpec.BooleanValue SHADER_PACK_FOG_OVERRIDE = BUILDER
             .comment("Extend fog distance when shader packs are active",
                      "Prevents distant LODs from being fully fogged out by shader packs")
-            .define("shaderPackFogOverride", true);
+            .define("shaderPackFogOverride", DEFAULT_SHADER_PACK_FOG_OVERRIDE);
 
     static final ModConfigSpec.BooleanValue SHADER_PACK_FALLBACK_PATCH = BUILDER
             .comment("Enable fallback shader patching for packs without voxy.json",
                      "Keeps LODs visible in shader packs that lack native Voxy integration")
-            .define("shaderPackFallbackPatch", true);
+            .define("shaderPackFallbackPatch", DEFAULT_SHADER_PACK_FALLBACK_PATCH);
 
     // Advanced settings
     static final ModConfigSpec.BooleanValue DONT_USE_EMBEDDIUM_BUILDER_THREADS = BUILDER
             .comment("Don't share threads with Embeddium's chunk builder")
-            .define("dontUseEmbeddiumBuilderThreads", false);
+            .define("dontUseEmbeddiumBuilderThreads", DEFAULT_DONT_USE_EMBEDDIUM_BUILDER_THREADS);
 
     // World curvature (experimental, LOD-only - vanilla chunks are not affected)
     static final ModConfigSpec.IntValue EARTH_CURVE_RATIO = BUILDER
@@ -81,13 +93,13 @@ public class VoxyNeoForgeConfig {
                      "250 = extreme curvature",
                      "Note: only affects LOD terrain, vanilla chunks remain flat.",
                      "Inspired by Distant Horizons' earth curvature feature")
-            .defineInRange("earthCurveRatio", 0, 0, 250);
+            .defineInRange("earthCurveRatio", DEFAULT_EARTH_CURVE_RATIO, 0, 250);
 
     // Debug settings
     static final ModConfigSpec.BooleanValue RENDER_STATISTICS = BUILDER
             .comment("Show render statistics in F3 debug screen",
                      "Displays LOD traversal counts, visible sections, and quad counts")
-            .define("renderStatistics", false);
+            .define("renderStatistics", DEFAULT_RENDER_STATISTICS);
 
     public static final ModConfigSpec SPEC = BUILDER.build();
 
@@ -146,51 +158,111 @@ public class VoxyNeoForgeConfig {
     // ========== Getters ==========
 
     public static boolean isEnabled() {
-        return ENABLED.get();
+        if (!configLoaded) return DEFAULT_ENABLED;
+        try {
+            return ENABLED.get();
+        } catch (IllegalStateException ignored) {
+            return DEFAULT_ENABLED;
+        }
     }
 
     public static boolean isRenderingEnabled() {
-        return ENABLE_RENDERING.get();
+        if (!configLoaded) return DEFAULT_ENABLE_RENDERING;
+        try {
+            return ENABLE_RENDERING.get();
+        } catch (IllegalStateException ignored) {
+            return DEFAULT_ENABLE_RENDERING;
+        }
     }
 
     public static boolean isIngestEnabled() {
-        return INGEST_ENABLED.get();
+        if (!configLoaded) return DEFAULT_INGEST_ENABLED;
+        try {
+            return INGEST_ENABLED.get();
+        } catch (IllegalStateException ignored) {
+            return DEFAULT_INGEST_ENABLED;
+        }
     }
 
     public static int getSectionRenderDistance() {
-        return SECTION_RENDER_DISTANCE.get();
+        if (!configLoaded) return DEFAULT_SECTION_RENDER_DISTANCE;
+        try {
+            return SECTION_RENDER_DISTANCE.get();
+        } catch (IllegalStateException ignored) {
+            return DEFAULT_SECTION_RENDER_DISTANCE;
+        }
     }
 
     public static int getServiceThreads() {
-        return SERVICE_THREADS.get();
+        if (!configLoaded) return DEFAULT_SERVICE_THREADS;
+        try {
+            return SERVICE_THREADS.get();
+        } catch (IllegalStateException ignored) {
+            return DEFAULT_SERVICE_THREADS;
+        }
     }
 
     public static float getSubDivisionSize() {
-        return SUB_DIVISION_SIZE.get().floatValue();
+        if (!configLoaded) return (float) DEFAULT_SUB_DIVISION_SIZE;
+        try {
+            return SUB_DIVISION_SIZE.get().floatValue();
+        } catch (IllegalStateException ignored) {
+            return (float) DEFAULT_SUB_DIVISION_SIZE;
+        }
     }
 
     public static boolean useEnvironmentalFog() {
-        return USE_ENVIRONMENTAL_FOG.get();
+        if (!configLoaded) return DEFAULT_USE_ENVIRONMENTAL_FOG;
+        try {
+            return USE_ENVIRONMENTAL_FOG.get();
+        } catch (IllegalStateException ignored) {
+            return DEFAULT_USE_ENVIRONMENTAL_FOG;
+        }
     }
 
     public static boolean enableShaderPackFogOverride() {
-        return SHADER_PACK_FOG_OVERRIDE.get();
+        if (!configLoaded) return DEFAULT_SHADER_PACK_FOG_OVERRIDE;
+        try {
+            return SHADER_PACK_FOG_OVERRIDE.get();
+        } catch (IllegalStateException ignored) {
+            return DEFAULT_SHADER_PACK_FOG_OVERRIDE;
+        }
     }
 
     public static boolean enableShaderPackFallbackPatch() {
-        return SHADER_PACK_FALLBACK_PATCH.get();
+        if (!configLoaded) return DEFAULT_SHADER_PACK_FALLBACK_PATCH;
+        try {
+            return SHADER_PACK_FALLBACK_PATCH.get();
+        } catch (IllegalStateException ignored) {
+            return DEFAULT_SHADER_PACK_FALLBACK_PATCH;
+        }
     }
 
     public static boolean dontUseEmbeddiumBuilderThreads() {
-        return DONT_USE_EMBEDDIUM_BUILDER_THREADS.get();
+        if (!configLoaded) return DEFAULT_DONT_USE_EMBEDDIUM_BUILDER_THREADS;
+        try {
+            return DONT_USE_EMBEDDIUM_BUILDER_THREADS.get();
+        } catch (IllegalStateException ignored) {
+            return DEFAULT_DONT_USE_EMBEDDIUM_BUILDER_THREADS;
+        }
     }
 
     public static boolean isRenderStatisticsEnabled() {
-        return RENDER_STATISTICS.get();
+        if (!configLoaded) return DEFAULT_RENDER_STATISTICS;
+        try {
+            return RENDER_STATISTICS.get();
+        } catch (IllegalStateException ignored) {
+            return DEFAULT_RENDER_STATISTICS;
+        }
     }
 
     public static int getEarthCurveRatio() {
-        return EARTH_CURVE_RATIO.get();
+        if (!configLoaded) return DEFAULT_EARTH_CURVE_RATIO;
+        try {
+            return EARTH_CURVE_RATIO.get();
+        } catch (IllegalStateException ignored) {
+            return DEFAULT_EARTH_CURVE_RATIO;
+        }
     }
 
     // ========== Setters (for Embeddium UI integration) ==========

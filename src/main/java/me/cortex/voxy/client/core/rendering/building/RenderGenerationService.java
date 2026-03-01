@@ -4,7 +4,6 @@ import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import me.cortex.voxy.client.core.model.IdNotYetComputedException;
 import me.cortex.voxy.client.core.model.ModelBakerySubsystem;
-import me.cortex.voxy.client.core.rendering.util.UploadStream;
 import me.cortex.voxy.common.thread.Service;
 import me.cortex.voxy.common.thread.ServiceManager;
 import me.cortex.voxy.common.util.Pair;
@@ -13,11 +12,7 @@ import me.cortex.voxy.common.world.WorldSection;
 import me.cortex.voxy.common.world.other.Mapper;
 
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.PriorityBlockingQueue;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.StampedLock;
 import java.util.function.Consumer;
@@ -29,56 +24,38 @@ import java.util.function.Consumer;
 // and process accordingly
 public class RenderGenerationService {
     private static final int MAX_HOLDING_SECTION_COUNT = 1000;
-    private static final int DEFERRED_RETRY_BASE_DELAY_MS = 250;
+    private static final int DISTANCE_BUCKET_BITS = 20;
+    private static final long DISTANCE_BUCKET_MASK = (1L << DISTANCE_BUCKET_BITS) - 1L;
 
     public static final AtomicInteger MESH_FAILED_COUNTER = new AtomicInteger();
     private static final AtomicInteger COUNTER = new AtomicInteger();
-    private volatile int priorityOriginSectionX;
-    private volatile int priorityOriginSectionY;
-    private volatile int priorityOriginSectionZ;
-
-    private final class BuildTask {
+    private static final class BuildTask {
         WorldSection section;
         final long position;
+        boolean hasDoneModelRequestInner;
+        boolean hasDoneModelRequestOuter;
+        int attempts;
+        int addin;
         long priority = Long.MIN_VALUE;
         private BuildTask(long position) {
             this.position = position;
         }
-        private void updatePriority() {
-            int unique = COUNTER.incrementAndGet() & 0xFFFFFF;
-            int lvlPriority = WorldEngine.MAX_LOD_LAYER-WorldEngine.getLevel(this.position);
-            lvlPriority = Math.min(lvlPriority, 3);//Make the 2 highest quality have equal priority
-
-            // Prioritize sections nearest to camera. This prevents initial ring processing from
-            // filling a distant corner first when enqueue order is noisy.
-            int lvl = WorldEngine.getLevel(this.position);
-            int span = 1 << lvl;
-            int sx = WorldEngine.getX(this.position) << lvl;
-            int sy = WorldEngine.getY(this.position) << lvl;
-            int sz = WorldEngine.getZ(this.position) << lvl;
-            int ex = sx + span - 1;
-            int ey = sy + span - 1;
-            int ez = sz + span - 1;
-
-            int ox = RenderGenerationService.this.priorityOriginSectionX;
-            int oy = RenderGenerationService.this.priorityOriginSectionY;
-            int oz = RenderGenerationService.this.priorityOriginSectionZ;
-
-            int dx = ox < sx ? (sx - ox) : (ox > ex ? (ox - ex) : 0);
-            int dy = oy < sy ? (sy - oy) : (oy > ey ? (oy - ey) : 0);
-            int dz = oz < sz ? (sz - oz) : (oz > ez ? (oz - ez) : 0);
-            long dist2 = (long)dx * dx + (long)dy * dy + (long)dz * dz;
-            long distKey = Math.min(0xFFFFFFFFL, dist2);
-
-            long classKey = (lvlPriority * 6L) & 0xFFL;
-            this.priority = (classKey << 56) | (distKey << 24) | Integer.toUnsignedLong(unique);
+        private void updatePriority(int originX, int originY, int originZ) {
+            int unique = COUNTER.incrementAndGet();
+            long distanceBucket = computeDistanceBucket(this.position, originX, originY, originZ);
+            // Distance-first priority so near rings converge before far updates.
+            // Tie-breaks: higher-detail LODs first, then retry/adin bookkeeping.
+            int lodLevel = Math.min(7, Math.max(0, WorldEngine.getLevel(this.position)));
+            long retryClass = (Math.min(this.attempts, 3) * 2L) + this.addin;
+            long tieBreaker = ((long) lodLevel << 3) | retryClass;
+            this.priority = (((distanceBucket << 6) | tieBreaker) << 32) + Integer.toUnsignedLong(unique);
+            this.addin = 0;
         }
     }
 
     private final AtomicInteger holdingSectionCount = new AtomicInteger();//Used to limit section holding
 
     private final AtomicInteger taskQueueCount = new AtomicInteger();
-    private final AtomicInteger taskQueueReprioritizedCount = new AtomicInteger();
     private final PriorityBlockingQueue<BuildTask> taskQueue = new PriorityBlockingQueue<>(5000, (a,b)-> Long.compareUnsigned(a.priority, b.priority));
     private final StampedLock taskMapLock = new StampedLock();
     private final Long2ObjectOpenHashMap<BuildTask> taskMap = new Long2ObjectOpenHashMap<>(5000);
@@ -87,14 +64,11 @@ public class RenderGenerationService {
     private final ModelBakerySubsystem modelBakery;
     private Consumer<BuiltSection> resultConsumer;
     private final boolean emitMeshlets;
-    private final ConcurrentHashMap<Long, Integer> deferredRetryCounts = new ConcurrentHashMap<>();
-    private final ScheduledExecutorService deferredRetryExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
-        Thread t = new Thread(r, "Voxy deferred mesh retry");
-        t.setDaemon(true);
-        return t;
-    });
 
     private final Service service;
+    private volatile int priorityOriginSectionX;
+    private volatile int priorityOriginSectionY;
+    private volatile int priorityOriginSectionZ;
 
 
     /*
@@ -114,9 +88,10 @@ public class RenderGenerationService {
             return new Pair<>(() -> {
                 this.processJob(factory, seenMissed);
             }, factory::free);
-        }, 10, "Section mesh generation service", () -> {
-            boolean modelBacklogOk = modelBakery.getProcessingCount() < 400 || RenderGenerationService.MESH_FAILED_COUNTER.get() < 500;
-            return modelBacklogOk && !UploadStream.shouldThrottleMeshing();
+        }, 10, "Section mesh generation service", ()->{
+            int modelBakeQueueCount = modelBakery.getProcessingCount();
+            if (modelBakeQueueCount>1000) return false;//Pause mesh gen if there is alot of model baking happening
+            return modelBakery.getProcessingCount()<400||RenderGenerationService.MESH_FAILED_COUNTER.get()<500;
         });
     }
 
@@ -159,6 +134,34 @@ public class RenderGenerationService {
         return this.world.acquireIfExists(pos);
     }
 
+    private static long computeDistanceBucket(long pos, int originX, int originY, int originZ) {
+        int lvl = WorldEngine.getLevel(pos);
+        int x = WorldEngine.getX(pos);
+        int y = WorldEngine.getY(pos);
+        int z = WorldEngine.getZ(pos);
+
+        int scale = 1 << lvl;
+        int centerX = (x << lvl) + (scale >> 1);
+        int centerY = (y << lvl) + (scale >> 1);
+        int centerZ = (z << lvl) + (scale >> 1);
+
+        long dx = (long) centerX - originX;
+        long dy = (long) centerY - originY;
+        long dz = (long) centerZ - originZ;
+
+        // Prioritize a near-player "ring" expansion: horizontal distance dominates, vertical distance is de-emphasized.
+        long horizontalDistSq = dx * dx + dz * dz;
+        long verticalPenalty = (dy * dy) >> 2;
+        long distance = horizontalDistSq + verticalPenalty;
+        return Math.min(DISTANCE_BUCKET_MASK, distance);
+    }
+
+    public void setPriorityOrigin(double cameraX, double cameraY, double cameraZ) {
+        this.priorityOriginSectionX = ((int) Math.floor(cameraX)) >> 5;
+        this.priorityOriginSectionY = ((int) Math.floor(cameraY)) >> 5;
+        this.priorityOriginSectionZ = ((int) Math.floor(cameraZ)) >> 5;
+    }
+
     private static boolean putTaskFirst(long pos) {
         //Level 3 or 4
         return WorldEngine.getLevel(pos) > 2;
@@ -167,9 +170,6 @@ public class RenderGenerationService {
     //TODO: add a generated render data cache
     private void processJob(RenderDataFactory factory, IntOpenHashSet seenMissedIds) {
         BuildTask task = this.taskQueue.poll();
-        if (task == null) {
-            return;
-        }
         this.taskQueueCount.decrementAndGet();
 
         //long time = BuiltSection.getTime();
@@ -194,7 +194,6 @@ public class RenderGenerationService {
         }
 
         if (section == null) {
-            this.deferredRetryCounts.remove(task.position);
             if (this.resultConsumer != null) {
                 this.resultConsumer.accept(BuiltSection.empty(task.position));
             }
@@ -207,27 +206,103 @@ public class RenderGenerationService {
         try {
             mesh = factory.generateMesh(section);
         } catch (IdNotYetComputedException e) {
-            // Request missing models once, then fail fast for this section.
-            // With air fallback active, retry loops mostly add CPU pressure and queue churn.
-            if (e.isIdBlockId && !this.modelBakery.factory.hasModelForBlockId(e.id) && seenMissedIds.add(e.id)) {
-                this.modelBakery.requestBlockBake(e.id);
-            }
-            if (e.auxData == null) {
-                this.computeAndRequestRequiredModels(seenMissedIds, section);
-            } else {
-                this.computeAndRequestRequiredModels(seenMissedIds, e.auxBitMsk, e.auxData);
-            }
+            {
+                long stamp = this.taskMapLock.writeLock();
+                BuildTask other = this.taskMap.putIfAbsent(task.position, task);
+                this.taskMapLock.unlockWrite(stamp);
 
-            MESH_FAILED_COUNTER.incrementAndGet();
-            if (this.resultConsumer != null) {
-                this.resultConsumer.accept(BuiltSection.emptyWithChildren(task.position, section.getNonEmptyChildren()));
+                if (other != null) {//Weve been replaced
+                    //Request the block
+                    if (e.isIdBlockId) {
+                        //TODO: maybe move this to _after_ task as been readded to queue??
+                        if (!this.modelBakery.factory.hasModelForBlockId(e.id)) {
+                            if (seenMissedIds.add(e.id)) {
+                                this.modelBakery.requestBlockBake(e.id);
+                            }
+                        }
+                    }
+                    //Exchange info
+                    if (task.hasDoneModelRequestInner) {
+                        other.hasDoneModelRequestInner = true;
+                    }
+                    if (task.hasDoneModelRequestOuter) {
+                        other.hasDoneModelRequestOuter = true;
+                    }
+                    if (task.section != null) {
+                        this.holdingSectionCount.decrementAndGet();
+                    }
+                    task.section = null;
+                    shouldFreeSection = true;
+                    task = null;
+                }
             }
-            this.scheduleDeferredRetry(task.position);
-            if (task.section != null) {
-                this.holdingSectionCount.decrementAndGet();
+            if (task != null) {
+                //This is our task
+
+                //Request the block
+                if (e.isIdBlockId) {
+                    //TODO: maybe move this to _after_ task as been readded to queue??
+                    if (!this.modelBakery.factory.hasModelForBlockId(e.id)) {
+                        if (seenMissedIds.add(e.id)) {
+                            this.modelBakery.requestBlockBake(e.id);
+                        }
+                    }
+                }
+
+                if (task.hasDoneModelRequestOuter || task.hasDoneModelRequestInner) {
+                    MESH_FAILED_COUNTER.incrementAndGet();
+                }
+
+                if (task.hasDoneModelRequestInner && task.hasDoneModelRequestOuter) {
+                    task.attempts++;
+                    try {
+                        Thread.sleep(1);
+                    } catch (InterruptedException ex) {
+                        throw new RuntimeException(ex);
+                    }
+                } else {
+                    if (task.hasDoneModelRequestInner) {
+                        task.attempts++;//This is because it can be baking and just model thing isnt keeping up
+                    }
+
+                    if (!task.hasDoneModelRequestInner) {
+                        //The reason for the extra id parameter is that we explicitly add/check against the exception id due to e.g. requesting accross a chunk boarder wont be captured in the request
+                        if (e.auxData == null)//the null check this is because for it to be, the inner must already be computed
+                            this.computeAndRequestRequiredModels(seenMissedIds, section);
+                        task.hasDoneModelRequestInner = true;
+                    }
+                    //If this happens... aahaha painnnn
+                    if (task.hasDoneModelRequestOuter) {
+                        task.attempts++;
+                    }
+
+                    if ((!task.hasDoneModelRequestOuter) && e.auxData != null) {
+                        this.computeAndRequestRequiredModels(seenMissedIds, e.auxBitMsk, e.auxData);
+                        task.hasDoneModelRequestOuter = true;
+                    }
+
+                    task.addin = WorldEngine.getLevel(task.position)>2?1:0;//Single time addin which gives the models time to bake before the task executes
+                }
+
+                //Keep the lock on the section, and attach it to the task, this prevents needing to re-aquire it later
+                if (task.section == null) {
+                    if (this.holdingSectionCount.get() < MAX_HOLDING_SECTION_COUNT) {
+                        this.holdingSectionCount.incrementAndGet();
+                        task.section = section;
+                        shouldFreeSection = false;
+                    }
+                } else {
+                    shouldFreeSection = false;
+                }
+
+                task.updatePriority(this.priorityOriginSectionX, this.priorityOriginSectionY, this.priorityOriginSectionZ);
+                this.taskQueue.add(task);
+                this.taskQueueCount.incrementAndGet();
+
+                if (this.service.isLive()) {//Only execute if were not dead
+                    this.service.execute();//Since we put in queue, release permit
+                }
             }
-            section.release();
-            return;
         }
 
         if (shouldFreeSection) {
@@ -238,28 +313,12 @@ public class RenderGenerationService {
         }
 
         if (mesh != null) {//If the mesh is null it means it didnt finish, so dont submit
-            this.deferredRetryCounts.remove(task.position);
             if (this.resultConsumer != null) {
                 this.resultConsumer.accept(mesh);
             } else {
                 mesh.free();
             }
         }
-    }
-
-    private void scheduleDeferredRetry(long pos) {
-        int attempt = this.deferredRetryCounts.merge(pos, 1, Integer::sum);
-
-        // Keep retrying at low frequency until success, so transient missing-model states
-        // eventually refill gaps. Delay quickly ramps, then caps.
-        long shift = Math.min(6, Math.max(0, attempt - 1));
-        long delayMs = Math.min(10_000L, (long) DEFERRED_RETRY_BASE_DELAY_MS << shift);
-        this.deferredRetryExecutor.schedule(() -> {
-            if (!this.service.isLive()) {
-                return;
-            }
-            this.enqueueTask(pos);
-        }, delayMs, TimeUnit.MILLISECONDS);
     }
 
 
@@ -277,28 +336,11 @@ public class RenderGenerationService {
 
         if (isOurs[0]) {//If its not ours we dont care about it
             //Set priority and insert into queue and execute
-            task.updatePriority();
+            task.updatePriority(this.priorityOriginSectionX, this.priorityOriginSectionY, this.priorityOriginSectionZ);
             this.taskQueue.add(task);
             this.taskQueueCount.incrementAndGet();
             this.service.execute();
-            return;
         }
-
-        // Existing queued tasks still need to follow camera movement.
-        // Refresh priority and move it in the queue if still queued.
-        boolean wasQueued = this.taskQueue.remove(task);
-        if (wasQueued) {
-            task.updatePriority();
-            this.taskQueue.add(task);
-            this.taskQueueReprioritizedCount.incrementAndGet();
-            this.service.execute();
-        }
-    }
-
-    public void setPriorityOrigin(double cameraX, double cameraY, double cameraZ) {
-        this.priorityOriginSectionX = ((int) Math.floor(cameraX)) >> 5;
-        this.priorityOriginSectionY = ((int) Math.floor(cameraY)) >> 5;
-        this.priorityOriginSectionZ = ((int) Math.floor(cameraZ)) >> 5;
     }
 
     /*
@@ -308,9 +350,6 @@ public class RenderGenerationService {
     */
 
     public void shutdown() {
-        this.deferredRetryExecutor.shutdownNow();
-        this.deferredRetryCounts.clear();
-
         //Steal and free as much work as possible
         while (this.service.numJobs() != 0) {
             int i = this.service.drain();
@@ -362,8 +401,6 @@ public class RenderGenerationService {
             this.lastChangedTime = System.currentTimeMillis();
         }
         debug.add("RSSQ/TFC: " + this.taskQueueCount.get() + "/" + MESH_FAILED_COUNTER.get());//render section service queue, Task Fail Counter
-        debug.add("RSSQ_REPRIO: " + this.taskQueueReprioritizedCount.get());
-        debug.add("US-R/T: " + UploadStream.getRemainingCapacitySnapshot() + "/" + UploadStream.getBackpressureThresholdBytes());
 
     }
 

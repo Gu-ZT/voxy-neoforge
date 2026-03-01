@@ -383,6 +383,7 @@ public class IrisShaderPatch {
     private static boolean hasDhPrograms(ProgramSet programSet) {
         return programSet.get(ProgramId.DhTerrain).isPresent()
                 || programSet.get(ProgramId.DhWater).isPresent()
+                || programSet.get(ProgramId.DhGeneric).isPresent()
                 || programSet.get(ProgramId.DhShadow).isPresent();
     }
 

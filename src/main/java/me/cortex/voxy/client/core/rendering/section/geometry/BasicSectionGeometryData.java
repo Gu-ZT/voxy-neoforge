@@ -11,6 +11,10 @@ import static org.lwjgl.opengl.GL15C.GL_ARRAY_BUFFER;
 import static org.lwjgl.opengl.GL15C.glBindBuffer;
 
 public class BasicSectionGeometryData implements IGeometryData {
+    private static final long SPARSE_COMMIT_AHEAD_BYTES = 65536L * 1024L; // 64MB
+    private static final long SPARSE_ALIGNMENT_BYTES = 65536L;
+    private static final long OOB_WARN_INTERVAL_MS = 5000L;
+
     public static final int SECTION_METADATA_SIZE = 32;
     private final GlBuffer sectionMetadataBuffer;
     private final GlBuffer geometryBuffer;
@@ -64,16 +68,35 @@ public class BasicSectionGeometryData implements IGeometryData {
     }
 
     private long sparseCommitment = 0;//Tracks the current range of the allocated sparse buffer
+    private long nextOutOfBoundsWarnMs = 0L;
     public void ensureAccessable(int maxElementAccess) {
-        long size = (Integer.toUnsignedLong(maxElementAccess) * GeometryFormat.QUAD_BYTES + 65535L) & ~65535L;
+        long requestedSize = Integer.toUnsignedLong(maxElementAccess) * GeometryFormat.QUAD_BYTES;
+        long geometryCapacity = this.geometryBuffer.size();
+        long size = (requestedSize + (SPARSE_ALIGNMENT_BYTES - 1L)) & ~(SPARSE_ALIGNMENT_BYTES - 1L);
+
+        if (size > geometryCapacity) {
+            long now = System.currentTimeMillis();
+            if (now >= this.nextOutOfBoundsWarnMs) {
+                this.nextOutOfBoundsWarnMs = now + OOB_WARN_INTERVAL_MS;
+                Logger.warn("Geometry access exceeded buffer capacity; clamping sparse commitment request from "
+                        + (size / (1024 * 1024)) + "MB to " + (geometryCapacity / (1024 * 1024)) + "MB");
+            }
+            size = geometryCapacity;
+        }
+
         //If we are a sparse buffer, ensure the memory upto the requested size is allocated
         if (this.geometryBuffer.isSparse()) {
             if (this.sparseCommitment < size) {//if we try to access memory outside the allocation range, allocate it
                 glBindBuffer(GL_ARRAY_BUFFER, this.geometryBuffer.id);
-                size += 65536L*1024;//increase size by 64mb to prevent driver allocation thrashing
-                glBufferPageCommitmentARB(GL_ARRAY_BUFFER, this.sparseCommitment, size-this.sparseCommitment, true);
+                long targetCommitment = Math.min(geometryCapacity,
+                        (size + SPARSE_COMMIT_AHEAD_BYTES + (SPARSE_ALIGNMENT_BYTES - 1L)) & ~(SPARSE_ALIGNMENT_BYTES - 1L));
+                if (targetCommitment <= this.sparseCommitment) {
+                    glBindBuffer(GL_ARRAY_BUFFER, 0);
+                    return;
+                }
+                glBufferPageCommitmentARB(GL_ARRAY_BUFFER, this.sparseCommitment, targetCommitment - this.sparseCommitment, true);
                 glBindBuffer(GL_ARRAY_BUFFER, 0);
-                this.sparseCommitment = size;
+                this.sparseCommitment = targetCommitment;
             }
         }
     }
@@ -131,7 +154,7 @@ public class BasicSectionGeometryData implements IGeometryData {
 
                 long TIMEOUT = 2500;
 
-                while (System.currentTimeMillis() - start > TIMEOUT) {//Wait up to 2.5 seconds for memory to release
+                while (System.currentTimeMillis() - start < TIMEOUT) {//Wait up to 2.5 seconds for memory to release
                     glFinish();
                     if (Capabilities.INSTANCE.getFreeDedicatedGpuMemory() - gpuMemory > releaseSize) break;
                 }

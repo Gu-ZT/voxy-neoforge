@@ -31,9 +31,23 @@ public abstract class MixinLevelRenderer implements IGetVoxyRenderSystem {
 
     @Inject(method = "allChanged()V", at = @At("RETURN"), order = 900)//We want to inject before embeddium
     private void reloadVoxyRenderer(CallbackInfo ci) {
-        this.shutdownRenderer();
-        if (this.level != null) {
+        // allChanged() can be triggered by client-side resource/plugin reloads (e.g. EMI),
+        // not only true world transitions. Recreating Voxy here causes avoidable teardown/rebuild churn.
+        if (this.level == null) {
+            this.shutdownRenderer();
+            return;
+        }
+
+        if (this.renderer == null) {
             this.createRenderer();
+            return;
+        }
+
+        // Keep existing renderer and only refresh mutable runtime parameters.
+        this.renderer.setRenderDistance(VoxyConfig.CONFIG.getSectionRenderDistance());
+        var instance = (VoxyClientInstance) VoxyCommon.getInstance();
+        if (instance != null) {
+            instance.updateDedicatedThreads();
         }
     }
 

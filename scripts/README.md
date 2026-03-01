@@ -145,6 +145,33 @@ bash scripts/perf_latest_summary.sh /path/to/logs/latest.log
 - `[WORLD_SECTION_CACHE]`
   - `hit_pct`, `hits`, `misses`, `rejects`
 
+### voxy_log_triage.sh
+
+**Purpose:** Classifies Voxy warnings/perf signatures from a `latest.log` and prints actionable triage recommendations with implementation file mapping.
+
+**Usage:**
+```bash
+# Analyze a local latest.log
+bash scripts/voxy_log_triage.sh /path/to/latest.log
+
+# Example with pulled test log
+bash scripts/voxy_log_triage.sh .tmp/logs/latest-craftoria-aftertest.log
+```
+
+**What it summarizes:**
+- `Missing model summary` warnings (count + peak misses + peak unique IDs)
+- `Inflight request summary` warnings (deferred/suppressed/pending reruns peaks)
+- `Large amount of copies` warnings
+- `Failed to wait for gpu memory to be freed` warnings
+- `VOXY_PERF async_node` peaks (`max_copy_batch`, `pending_copy_remaining`, thresholds)
+- `VOXY_PERF upload_stream` peaks (`pending_copies`, `queued_frames`, backpressure, stalls)
+
+**Output sections:**
+- `Issue Summary`
+- `Peaks`
+- `Implementation Map` (points directly to source files)
+- `Recommended Actions`
+
 ## Validation Workflow
 
 ### Before Creating New Mixin

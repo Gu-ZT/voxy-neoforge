@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "opaqueDrawBuffers": [0, 6, 4],
+  "translucentDrawBuffers": [0, 4, 8],
+  "uniforms": ["framemod8", "viewWidth", "viewHeight"],
+  "samplers": {},
+  "excludeLodsFromVanillaDepth": false,
+  "useViewportDims": true,
+  "dhImpersonation": true,
+  "taaOffset": "{\n#ifdef TAA\nvec2 jitterOffsets8[8] = vec2[8](\n    vec2( 0.125,-0.375),\n    vec2(-0.125, 0.375),\n    vec2( 0.625, 0.125),\n    vec2( 0.375,-0.625),\n    vec2(-0.625, 0.625),\n    vec2(-0.875,-0.125),\n    vec2( 0.375,-0.875),\n    vec2( 0.875, 0.875)\n);\nreturn jitterOffsets8[int(framemod8)] * (1.0 / vec2(viewWidth, viewHeight));\n#else\nreturn vec2(0.0);\n#endif\n}"
+}
