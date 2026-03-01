@@ -9,6 +9,7 @@ import me.cortex.voxy.client.TimingStatistics;
 import me.cortex.voxy.client.VoxyClient;
 import me.cortex.voxy.client.compat.IrisCompatManager;
 import me.cortex.voxy.client.config.VoxyConfig;
+import me.cortex.voxy.client.iris.IrisShaderPatch;
 import me.cortex.voxy.client.core.gl.Capabilities;
 import me.cortex.voxy.client.core.gl.GlBuffer;
 import me.cortex.voxy.client.core.gl.GlTexture;
@@ -66,6 +67,7 @@ import static org.lwjgl.opengl.GL45C.glBindTextureUnit;
 
 public class VoxyRenderSystem {
     private static final long SPARSE_GEOMETRY_MIN_BYTES = 1024L * 1024L * 1024L; // 1GB virtual address space floor
+    private static boolean loggedDhProjectionSemantics = false;
 
     private static final boolean RENDER_LODS_IN_IRIS_SHADOW_PASS =
             System.getProperty("voxy.renderLodsInIrisShadowPass", "false").equalsIgnoreCase("true");
@@ -632,7 +634,19 @@ public class VoxyRenderSystem {
         // meaning that it explodes (due to near plane clipping).. _badly_ with the rastered culling being wrong in rare cases for the immediate
         // sections rendered after the vanilla render distance
         float nearVoxy = DHImpersonationSemantics.getNearPlaneBlocks();
-        float farVoxy = DHImpersonationSemantics.ENABLED ? DHImpersonationSemantics.getFarPlaneBlocks() : 16 * 3000;
+        // Match projection semantics to the same runtime DH impersonation gate used by
+        // uniforms/samplers/macros. Property-only gating can drift from runtime patch state.
+        boolean dhImpersonationActive = IrisShaderPatch.shouldImpersonateDistantHorizons();
+        float farVoxy = dhImpersonationActive ? DHImpersonationSemantics.getFarPlaneBlocks() : 16 * 3000;
+        if (dhImpersonationActive && !loggedDhProjectionSemantics) {
+            loggedDhProjectionSemantics = true;
+            Logger.info("[DIAG] DH impersonation projection semantics active: near="
+                    + nearVoxy
+                    + " far="
+                    + farVoxy
+                    + " dhRenderDistance="
+                    + DHImpersonationSemantics.getRenderDistanceBlocks());
+        }
 
         return base.mulLocal(
                 makeProjectionMatrix(base, 0.05f, Minecraft.getInstance().gameRenderer.getDepthFar()).invert(),
