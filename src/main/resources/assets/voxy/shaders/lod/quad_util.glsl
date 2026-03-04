@@ -21,9 +21,12 @@ ivec3 extractLoDPosition(uvec2 encPos) {
 vec4 getFaceSize(uint faceData) {
     vec4 faceOffsetsSizes = extractFaceSizes(faceData);
 
+    float EPSILON = 0.00005f;
+
+    //Expand the quads by a very small amount (because of the subtraction after this also becomes an implicit add)
+    faceOffsetsSizes.xz -= vec2(EPSILON);
+
     //Make the end relative to the start
-    // NOTE: EPSILON is intentionally NOT applied here. It is applied LOD-scale-aware in setupQuad()
-    // so that the world-space gap stays constant instead of growing 2^lodLevel times.
     faceOffsetsSizes.yw -= faceOffsetsSizes.xz;
 
     return faceOffsetsSizes;
@@ -141,14 +144,6 @@ void setupQuad(out QuadData quad, const in Quad rawQuad, uvec2 sPos, bool genera
     }
 
     vec4 faceSize = getFaceSize(faceData);
-    // Apply a LOD-invariant epsilon: constant ~0.00005 world-blocks regardless of LOD level.
-    // Without this correction the old constant model-space epsilon grew by lodScale (2^lodLevel),
-    // causing visible skybox-leaking gaps between LOD quad rows at LOD 4+.
-    {
-        float scaledEpsilon = 0.00005 / lodScale;
-        faceSize.xz -= vec2(scaledEpsilon); // shift start inward
-        faceSize.yw += vec2(scaledEpsilon); // keep relative size the same
-    }
     #ifdef USE_SINGLE_TRI
     faceSize *= 2;
     #endif
@@ -167,38 +162,9 @@ void setupQuad(out QuadData quad, const in Quad rawQuad, uvec2 sPos, bool genera
     quad.uvCorner = faceSize.xz;
 }
 
-// Apply spherical world curvature effect (inspired by Distant Horizons)
-// Makes distant terrain curve downward as if standing on a spherical planet
-vec3 applyWorldCurvature(vec3 worldPos) {
-    if (uEarthRadius <= 0.0) {
-        return worldPos;
-    }
-
-    // Calculate local radius at vertex height
-    float localRadius = uEarthRadius + worldPos.y;
-
-    // Calculate the arc angle based on horizontal distance
-    float horizontalDist = length(worldPos.xz);
-    float phi = horizontalDist / localRadius;
-
-    // Apply spherical projection
-    // Y displacement: terrain curves down at distance
-    worldPos.y += (cos(phi) - 1.0) * localRadius;
-
-    // XZ scaling: slight convergence at extreme distances (prevents horizon stretching)
-    if (phi > 0.0001) {
-        worldPos.xz = worldPos.xz * sin(phi) / phi;
-    }
-
-    return worldPos;
-}
-
 vec4 getQuadCornerPos(in QuadData quad, uint cornerId) {
     vec2 cornerMask = vec2((cornerId>>1)&1u, cornerId&1u)*quad.lodScale;
     vec3 point = quad.basePoint + swizzelDataAxis(quad.axis,vec3(quad.quadSizeAddin*cornerMask,0));
-
-    // Apply world curvature before MVP transformation
-    point = applyWorldCurvature(point);
 
     vec4 pos = MVP * vec4(point, 1.0f);
     pos.xy += taaOffset*pos.w;

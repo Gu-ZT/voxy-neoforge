@@ -3,7 +3,6 @@ layout(binding = 0, std140) uniform SceneUniform {
     ivec3 baseSectionPos;
     uint frameId;
     vec3 cameraSubPos;
-    float uEarthRadius; // 0.0 = disabled, otherwise radius in blocks for world curvature
 };
 
 //TODO: see if making the stride 2*4*4 bytes or something cause you get that 16 byte write
@@ -22,7 +21,7 @@ layout(binding = BLOCK_MODEL_TEXTURE_BINDING) uniform sampler2D blockModelAtlas;
 
 
 #ifndef Quad
-#define Quad uvec4
+#define Quad ivec2
 #endif
 #ifdef QUAD_BUFFER_BINDING
 layout(binding = QUAD_BUFFER_BINDING, std430) readonly restrict buffer QuadBuffer {

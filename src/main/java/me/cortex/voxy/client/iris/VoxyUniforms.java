@@ -4,7 +4,6 @@ import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.IGetVoxyRenderSystem;
 import me.cortex.voxy.client.core.VoxyRenderSystem;
 import me.cortex.voxy.client.core.rendering.Viewport;
-import me.cortex.voxy.client.core.util.DHImpersonationSemantics;
 import net.irisshaders.iris.gl.uniform.UniformHolder;
 import net.minecraft.client.Minecraft;
 import org.joml.Matrix4f;
@@ -63,16 +62,6 @@ public class VoxyUniforms {
                 .uniformMatrix(PER_FRAME, "vxProj", VoxyUniforms::getProjection)
                 .uniformMatrix(PER_FRAME, "vxProjInv", new Inverted(VoxyUniforms::getProjection))
                 .uniformMatrix(PER_FRAME, "vxProjPrev", new PreviousMat(VoxyUniforms::getProjection));
-
-        if (IrisShaderPatch.shouldImpersonateDistantHorizons()) {
-            uniforms
-                    .uniform1f(PER_FRAME, "dhNearPlane", DHImpersonationSemantics::getNearPlaneBlocks)
-                    .uniform1f(PER_FRAME, "dhFarPlane", DHImpersonationSemantics::getFarPlaneBlocks)
-                    .uniform1i(PER_FRAME, "dhRenderDistance", DHImpersonationSemantics::getRenderDistanceBlocks)
-                    .uniformMatrix(PER_FRAME, "dhProjection", VoxyUniforms::getProjection)
-                    .uniformMatrix(PER_FRAME, "dhProjectionInverse", new Inverted(VoxyUniforms::getProjection))
-                    .uniformMatrix(PER_FRAME, "dhPreviousProjection", new PreviousMat(VoxyUniforms::getProjection));
-        }
     }
 
 

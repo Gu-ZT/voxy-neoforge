@@ -90,13 +90,18 @@ public abstract class AbstractSectionRenderer <T extends Viewport<T>, J extends 
     protected static Shader tryCompilePatchedOrNormal(Shader.Builder<?> builder, String shader, String original) {
         boolean patched = shader != original;//This is the correct comparison type (reference)
         try {
-            return builder.clone()
+            Shader result = builder.clone()
                     .defineIf("PATCHED_SHADER", patched)
                     .addSource(ShaderType.FRAGMENT, shader)
                     .compile();
+            Logger.info("[ShaderCompile] " + (patched ? "PATCHED" : "NORMAL") + " fragment shader compiled OK (len=" + shader.length() + ")");
+            return result;
         } catch (RuntimeException e) {
             if (patched) {
-                Logger.error("Failed to compile shader patch, using normal pipeline to prevent errors", e);
+                // Dump the first 4000 chars of the patched source so we can diagnose compile errors
+                // without needing a SHADER_DUMP.txt (which only captures GL-level failures).
+                String snippet = shader.length() > 4000 ? shader.substring(0, 4000) + "\n...[truncated]" : shader;
+                Logger.error("[ShaderCompile] PATCHED fragment shader failed — falling back to NORMAL. Source snippet:\n" + snippet, e);
                 return tryCompilePatchedOrNormal(builder, original, original);
             } else {
                 throw e;

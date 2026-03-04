@@ -103,11 +103,6 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
     }
 
     @Override
-    protected boolean shouldRenderTemporal(Viewport<?> viewport) {
-        return false;
-    }
-
-    @Override
     protected void finish(Viewport<?> viewport, int sourceFrameBuffer, int srcWidth, int srcHeight) {
         this.finalBlit.bind();
         if (this.useEnvFog) {

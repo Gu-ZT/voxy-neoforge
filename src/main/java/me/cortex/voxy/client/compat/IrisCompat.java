@@ -38,18 +38,24 @@ public final class IrisCompat {
                                                         HierarchicalOcclusionTraverser traversal,
                                                         BooleanSupplier frexSupplier) {
         if (!IrisUtil.IRIS_INSTALLED || !IrisUtil.SHADER_SUPPORT) {
+            Logger.info("[IrisCompat] createPipeline: IRIS_INSTALLED=" + IrisUtil.IRIS_INSTALLED + " SHADER_SUPPORT=" + IrisUtil.SHADER_SUPPORT + " -> null");
             return null;
         }
         var irisPipe = Iris.getPipelineManager().getPipelineNullable();
         if (irisPipe == null) {
+            Logger.info("[IrisCompat] createPipeline: irisPipe == null -> NormalRenderPipeline");
             return null;
         }
+        Logger.info("[IrisCompat] createPipeline: irisPipe=" + irisPipe.getClass().getName()
+                + " isIGetIrisVoxyPipelineData=" + (irisPipe instanceof IGetIrisVoxyPipelineData)
+                + " isPackInUse=" + IrisUtil.irisShaderPackEnabled());
         if (irisPipe instanceof IGetIrisVoxyPipelineData getVoxyPipeData) {
             var pipeData = getVoxyPipeData.voxy$getPipelineData();
             if (pipeData == null) {
+                Logger.warn("[IrisCompat] createPipeline: pipeData == null (MixinIrisRenderingPipeline.buildPipeline may have thrown) -> NormalRenderPipeline");
                 return null;
             }
-            Logger.info("Creating Voxy Iris render pipeline");
+            Logger.info("[IrisCompat] Creating Voxy Iris render pipeline (pipeData.thePipeline=" + pipeData.thePipeline + ")");
             try {
                 return new IrisVoxyRenderPipeline(pipeData, nodeManager, nodeCleaner, traversal, frexSupplier);
             } catch (Exception e) {

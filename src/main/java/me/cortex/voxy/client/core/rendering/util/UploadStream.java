@@ -7,12 +7,9 @@ import me.cortex.voxy.client.core.gl.GlPersistentMappedBuffer;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.util.AllocationArena;
 import me.cortex.voxy.common.util.MemoryBuffer;
-import me.cortex.voxy.commonImpl.VoxyCommon;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
 
 import static me.cortex.voxy.common.util.AllocationArena.SIZE_LIMIT;
 import static org.lwjgl.opengl.ARBDirectStateAccess.glCopyNamedBufferSubData;
@@ -32,19 +29,11 @@ public class UploadStream {
     private final LongArrayList thisFrameAllocations = new LongArrayList();
     private final Deque<UploadData> uploadList = new ArrayDeque<>();
 
-    private static final boolean USE_COHERENT = VoxyCommon.isVerificationFlagOn("uploadStreamUseCoherent", true);
-    private static final boolean LOG_PERF = VoxyCommon.isVerificationFlagOn("uploadStreamPerfLog", true);
-    private static final long PERF_LOG_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(10);
-    private static final long BACKPRESSURE_MIN_REMAINING_BYTES = Long.getLong("voxy.uploadBackpressureBytes", 8L << 20);
-    private static final AtomicLong LAST_REMAINING_CAPACITY_BYTES = new AtomicLong();
-    private static final AtomicLong GL_FINISH_STALLS = new AtomicLong();
-    private static final AtomicLong BACKPRESSURE_OBSERVATIONS = new AtomicLong();
-    private static final AtomicLong NEXT_PERF_LOG_NANOS = new AtomicLong(System.nanoTime() + PERF_LOG_INTERVAL_NANOS);
+    private static final boolean USE_COHERENT = false;
 
     public UploadStream(long size) {
         this.uploadBuffer = new GlPersistentMappedBuffer(size,GL_CLIENT_STORAGE_BIT|GL_MAP_WRITE_BIT|GL_MAP_UNSYNCHRONIZED_BIT|(USE_COHERENT?GL_MAP_COHERENT_BIT:GL_MAP_FLUSH_EXPLICIT_BIT)).name("UploadStream");
         this.allocationArena.setLimit(size);
-        LAST_REMAINING_CAPACITY_BYTES.set(size);
     }
 
     private long caddr = -1;
@@ -94,7 +83,6 @@ public class UploadStream {
                 Logger.error("Upload stream full, preemptively committing, this could cause bad things to happen");
                 int attempts = 10;
                 while (--attempts != 0 && this.caddr == SIZE_LIMIT) {
-                    GL_FINISH_STALLS.incrementAndGet();
                     glFinish();
                     this.tick(false);
                     this.caddr = this.allocationArena.alloc((int) size);
@@ -115,7 +103,6 @@ public class UploadStream {
             throw new IllegalStateException();
         }
 
-        this.refreshCapacitySnapshot();
         return addr;
     }
 
@@ -166,8 +153,6 @@ public class UploadStream {
             frame.allocations.forEach(this.allocationArena::free);
             frame.fence.free();
         }
-        this.refreshCapacitySnapshot();
-        this.maybeLogPerf();
     }
 
     public long getBaseAddress() {
@@ -176,58 +161,6 @@ public class UploadStream {
 
     public int getRawBufferId() {
         return this.uploadBuffer.id;
-    }
-
-    public static long getRemainingCapacitySnapshot() {
-        return LAST_REMAINING_CAPACITY_BYTES.get();
-    }
-
-    public static long getBackpressureThresholdBytes() {
-        return BACKPRESSURE_MIN_REMAINING_BYTES;
-    }
-
-    public static boolean shouldThrottleMeshing() {
-        long remaining = LAST_REMAINING_CAPACITY_BYTES.get();
-        boolean throttled = remaining < BACKPRESSURE_MIN_REMAINING_BYTES;
-        if (throttled) {
-            BACKPRESSURE_OBSERVATIONS.incrementAndGet();
-        }
-        return throttled;
-    }
-
-    private void refreshCapacitySnapshot() {
-        long used = this.allocationArena.getSize();
-        long remaining = this.uploadBuffer.size() - used;
-        LAST_REMAINING_CAPACITY_BYTES.set(Math.max(0L, remaining));
-    }
-
-    private void maybeLogPerf() {
-        if (!LOG_PERF) {
-            return;
-        }
-        long now = System.nanoTime();
-        long next = NEXT_PERF_LOG_NANOS.get();
-        if (now < next) {
-            return;
-        }
-        if (!NEXT_PERF_LOG_NANOS.compareAndSet(next, now + PERF_LOG_INTERVAL_NANOS)) {
-            return;
-        }
-
-        long remaining = LAST_REMAINING_CAPACITY_BYTES.get();
-        long used = this.uploadBuffer.size() - remaining;
-        Logger.info(
-                "VOXY_PERF upload_stream",
-                "coherent=" + USE_COHERENT,
-                "buffer_bytes=" + this.uploadBuffer.size(),
-                "used_bytes=" + used,
-                "remaining_bytes=" + remaining,
-                "threshold_bytes=" + BACKPRESSURE_MIN_REMAINING_BYTES,
-                "queued_frames=" + this.frames.size(),
-                "pending_copies=" + this.uploadList.size(),
-                "glfinish_stalls=" + GL_FINISH_STALLS.get(),
-                "backpressure_observations=" + BACKPRESSURE_OBSERVATIONS.get()
-        );
     }
 
     private record UploadFrame(GlFence fence, LongArrayList allocations) {}

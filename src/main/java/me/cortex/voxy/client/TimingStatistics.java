@@ -17,15 +17,16 @@ public class TimingStatistics {
         }
 
         private void reset() {
-            if (this.running) {
-                throw new IllegalStateException();
-            }
+            // Force-stop if still running (can happen when a previous frame exited early via return).
+            this.running = false;
             this.runtime = 0;
         }
 
         public void start() {
             if (this.running) {
-                throw new IllegalStateException();
+                // Already running — this is a bug but don't crash; restart the timer.
+                this.timestamp = System.nanoTime();
+                return;
             }
             this.running = true;
             this.timestamp = System.nanoTime();
@@ -33,7 +34,8 @@ public class TimingStatistics {
 
         public void stop() {
             if (!this.running) {
-                throw new IllegalStateException();
+                // Not running — this is a bug but don't crash; ignore the stop.
+                return;
             }
             this.running = false;
             this.runtime += System.nanoTime() - this.timestamp;

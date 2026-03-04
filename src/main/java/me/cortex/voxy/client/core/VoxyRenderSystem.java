@@ -9,7 +9,6 @@ import me.cortex.voxy.client.TimingStatistics;
 import me.cortex.voxy.client.VoxyClient;
 import me.cortex.voxy.client.compat.IrisCompatManager;
 import me.cortex.voxy.client.config.VoxyConfig;
-import me.cortex.voxy.client.iris.IrisShaderPatch;
 import me.cortex.voxy.client.core.gl.Capabilities;
 import me.cortex.voxy.client.core.gl.GlBuffer;
 import me.cortex.voxy.client.core.gl.GlTexture;
@@ -31,7 +30,6 @@ import me.cortex.voxy.client.core.rendering.section.geometry.IGeometryData;
 import me.cortex.voxy.client.core.rendering.util.DownloadStream;
 import me.cortex.voxy.client.core.rendering.util.PrintfDebugUtil;
 import me.cortex.voxy.client.core.rendering.util.UploadStream;
-import me.cortex.voxy.client.core.util.DHImpersonationSemantics;
 import me.cortex.voxy.client.core.util.GPUTiming;
 // MC 1.21.1 NeoForge: Iris shader integration excluded
 // import me.cortex.voxy.client.core.util.IrisUtil;
@@ -66,8 +64,7 @@ import static org.lwjgl.opengl.ARBIndirectParameters.GL_PARAMETER_BUFFER_BINDING
 import static org.lwjgl.opengl.GL45C.glBindTextureUnit;
 
 public class VoxyRenderSystem {
-    private static final long SPARSE_GEOMETRY_MIN_BYTES = 1024L * 1024L * 1024L; // 1GB virtual address space floor
-    private static boolean loggedDhProjectionSemantics = false;
+    private static final long SPARSE_GEOMETRY_MIN_BYTES = 1024L * 1024L * 1024L; // 1GB virtual address space floor for NVIDIA sparse buffers
 
     private static final boolean RENDER_LODS_IN_IRIS_SHADOW_PASS =
             System.getProperty("voxy.renderLodsInIrisShadowPass", "false").equalsIgnoreCase("true");
@@ -238,7 +235,6 @@ public class VoxyRenderSystem {
                 // Disabled for Embeddium compatibility - FogParameters not wired
                 // .setFogParameters(fogParameters)
                 .update();
-        this.renderGen.setPriorityOrigin(cameraX, cameraY, cameraZ);
 
         if (VoxyClient.getOcclusionDebugState()==0) {
             viewport.frameId++;
@@ -308,7 +304,6 @@ public class VoxyRenderSystem {
                     .setCamera(cameraX, cameraY, cameraZ)
                     .setScreenSize(snapshot.width, snapshot.height)
                     .update(false);
-            this.renderGen.setPriorityOrigin(cameraX, cameraY, cameraZ);
 
             this.renderShadow(viewport);
         } finally {
@@ -367,11 +362,12 @@ public class VoxyRenderSystem {
     // Cached GL state from setupViewport() so renderOpaque() avoids synchronous GL queries.
     private int cachedFramebufferId = 0;
     private int cachedViewportX = 0, cachedViewportY = 0, cachedViewportW = 0, cachedViewportH = 0;
-    private double smoothedFrameMs = 16.6;
 
     private boolean renderOpaqueFirstCall = true;
     private int renderOpaqueNullViewportWarmupFrames = 8;
     private int setupViewportWarnCount = 0;
+    private int renderOpaqueFrameCount = 0;
+    private int lastLoggedSectionCount = -1;
 
     public void renderOpaque(Viewport<?> viewport) {
         if (viewport == null) {
@@ -393,9 +389,15 @@ public class VoxyRenderSystem {
         // For NormalRenderPipeline, Embeddium's CUTOUT hook is the sole render entry point;
         // blocking it here causes LODs to be completely invisible when Iris is loaded but
         // the shader pack is not instrumented for Voxy (no voxy.json).
-        if (IrisCompatManager.isShadowActive() && !RENDER_LODS_IN_IRIS_SHADOW_PASS
-                && (this.pipeline instanceof IrisVoxyRenderPipeline)) {
-            return;
+        if (IrisCompatManager.isShadowActive() && !RENDER_LODS_IN_IRIS_SHADOW_PASS) {
+            if (this.pipeline instanceof IrisVoxyRenderPipeline) {
+                return; // Shadow handled by MixinShadowRenderer.renderShadowPass()
+            }
+            // NormalRenderPipeline has no dedicated shadow path — Embeddium CUTOUT hook is the
+            // only render entry point. Log once so we can confirm this code path is reached.
+            if (renderOpaqueFirstCall) {
+                me.cortex.voxy.common.Logger.info("[DIAG] renderOpaque: shadow active with NormalRenderPipeline — allowing LOD render (no dedicated shadow path)");
+            }
         }
 
         if (renderOpaqueFirstCall) {
@@ -405,6 +407,27 @@ public class VoxyRenderSystem {
                     + " boundFB=" + this.cachedFramebufferId
                     + " shadowActive=" + IrisCompatManager.isShadowActive()
                     + " pipeline=" + this.pipeline.getClass().getSimpleName());
+        }
+
+        // Periodic diagnostic: log section count + pipeline route every ~10s (600 frames)
+        renderOpaqueFrameCount++;
+        if (renderOpaqueFrameCount == 1 || renderOpaqueFrameCount % 600 == 0) {
+            int sc = (this.pipeline instanceof AbstractRenderPipeline arp)
+                    ? arp.getSectionCount() : -1;
+            if (sc != lastLoggedSectionCount || renderOpaqueFrameCount == 1) {
+                lastLoggedSectionCount = sc;
+                Logger.info("[VoxyDiag] frame=" + renderOpaqueFrameCount
+                        + " pipeline=" + this.pipeline.getClass().getSimpleName()
+                        + " sectionCount=" + sc
+                        + " meshQueue=" + this.renderGen.getTaskCount()
+                        + " meshCompleted=" + RenderGenerationService.MESH_COMPLETED_COUNTER.get()
+                        + " meshFailed=" + RenderGenerationService.MESH_FAILED_COUNTER.get()
+                        + " modelQueue=" + this.modelService.getProcessingCount()
+                        + " cam=(" + String.format("%.0f,%.0f,%.0f", viewport.cameraX, viewport.cameraY, viewport.cameraZ) + ")"
+                        + " viewport=" + viewport.width + "x" + viewport.height
+                        + " fb=" + this.cachedFramebufferId
+                        + " shadowActive=" + IrisCompatManager.isShadowActive());
+            }
         }
 
         // MC 1.21.1 NeoForge: Fog is handled by VoxyClientEvents.onRenderFog()
@@ -435,7 +458,9 @@ public class VoxyRenderSystem {
         //var target = DefaultTerrainRenderPasses.CUTOUT.getTarget();
         //boundFB = ((net.minecraft.client.texture.GlTexture) target.getColorAttachment()).getOrCreateFramebuffer(((GlBackend) RenderSystem.getDevice()).getFramebufferManager(), target.getDepthAttachment());
         if (boundFB == 0) {
-            throw new IllegalStateException("Cannot use the default framebuffer as cannot source from it");
+            // Default framebuffer bound — Iris or MC hasn't set up its FBO yet this frame.
+            // This is a transient condition during world join / shader reload; skip silently.
+            return;
         }
 
         //this.autoBalanceSubDivSize();
@@ -461,58 +486,12 @@ public class VoxyRenderSystem {
 
         PrintfDebugUtil.tick();
 
-        //As much dynamic runtime stuff here
         {
-            //Tick upload stream (this is ok to do here as upload ticking is just memory management)
             UploadStream.INSTANCE.tick();
 
-            // Adapt budgets to frame-time/backlog so we prioritize near-ring convergence
-            // without hard-capping useful throughput during stable frames.
-            long frameNs = System.nanoTime() - startTime;
-            double frameMs = Math.max(0.1, frameNs / 1_000_000.0);
-            this.smoothedFrameMs = this.smoothedFrameMs * 0.9 + frameMs * 0.1;
-
-            int queuedMeshTasks = this.renderGen.getTaskCount();
-            int pendingRingOps = this.renderDistanceTracker.getPendingOperationCount();
-            int trackerProcessRate = 16;
-            int maxTrackerPasses = 12;
-            long trackerBudgetNs = 1_100_000L;
-            if (this.smoothedFrameMs <= 16.6) {
-                trackerProcessRate = pendingRingOps > 4500 ? 80 : (pendingRingOps > 2200 ? 56 : 32);
-                maxTrackerPasses = queuedMeshTasks > 2500 ? 64 : (queuedMeshTasks > 1200 ? 48 : 32);
-                trackerBudgetNs = pendingRingOps > 3500 ? 3_200_000L : 2_200_000L;
-            } else if (this.smoothedFrameMs <= 22.0) {
-                trackerProcessRate = pendingRingOps > 2200 ? 40 : 24;
-                maxTrackerPasses = queuedMeshTasks > 2500 ? 40 : 24;
-                trackerBudgetNs = 1_700_000L;
-            }
-            this.renderDistanceTracker.setProcessRate(trackerProcessRate);
-            long trackerStartNs = System.nanoTime();
-            for (int pass = 0; pass < maxTrackerPasses; pass++) {
-                if (System.nanoTime() - trackerStartNs >= trackerBudgetNs) {
-                    break;
-                }
-                if (!this.renderDistanceTracker.setCenterAndProcess(viewport.cameraX, viewport.cameraZ)) {
-                    break;
-                }
-            }
+            while (this.renderDistanceTracker.setCenterAndProcess(viewport.cameraX, viewport.cameraZ) && VoxyClient.isFrexActive());
             TimingStatistics.H.start();
-            int pendingModelTasks = this.modelService.getProcessingCount();
-            int maxModelPasses;
-            long modelBudgetNs;
-            if (this.smoothedFrameMs <= 16.6) {
-                maxModelPasses = pendingModelTasks > 1400 ? 10 : (pendingModelTasks > 500 ? 6 : 3);
-                modelBudgetNs = pendingModelTasks > 1400 ? 4_600_000L : (pendingModelTasks > 500 ? 2_800_000L : 1_400_000L);
-            } else if (this.smoothedFrameMs <= 22.0) {
-                maxModelPasses = pendingModelTasks > 900 ? 6 : (pendingModelTasks > 300 ? 4 : 2);
-                modelBudgetNs = pendingModelTasks > 900 ? 3_200_000L : (pendingModelTasks > 300 ? 2_000_000L : 1_000_000L);
-            } else {
-                maxModelPasses = pendingModelTasks > 900 ? 4 : 2;
-                modelBudgetNs = pendingModelTasks > 900 ? 2_200_000L : 900_000L;
-            }
-            for (int pass = 0; pass < maxModelPasses && !this.modelService.areQueuesEmpty(); pass++) {
-                this.modelService.tick(modelBudgetNs);
-            }
+            do { this.modelService.tick(900_000); } while (VoxyClient.isFrexActive() && !this.modelService.areQueuesEmpty());
             TimingStatistics.H.stop();
         }
         GPUTiming.INSTANCE.marker();
@@ -538,13 +517,9 @@ public class VoxyRenderSystem {
 
             IrisCompatManager.clearSamplers();
 
-            // Clear all SSBO slots Voxy uses (0-9). Vanilla/Embeddium never bind SSBOs
-            // in the terrain pass, so restoring to 0 is safe and avoids glGetIntegeri stalls.
             for (int i = 0; i < 10; i++) {
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, 0);
             }
-
-            //(Embeddium shader integration not wired)
         }
 
         TimingStatistics.all.stop();
@@ -598,19 +573,11 @@ public class VoxyRenderSystem {
         }
     }
 
-    /**
-     * Extract the actual vertical FOV (in radians) from a projection matrix.
-     * Handles FOV modifiers (potions, speed, zoom, etc.) that alter the actual frustum
-     * vs the raw slider value from options.fov().
-     * For a standard perspective matrix, m11 = 1/tan(fovY/2), so fovY = 2*atan(1/m11).
-     */
     private static float extractFovFromProjection(Matrix4fc projection) {
-        // m11 = cot(fovY/2) = 1/tan(fovY/2) for a standard perspective matrix
         float m11 = projection.m11();
         if (m11 > 0.001f) {
             return (float) (2.0 * Math.atan(1.0 / m11));
         }
-        // Fallback to options value if matrix looks degenerate
         float fovDeg = Minecraft.getInstance().options.fov().get().floatValue();
         return fovDeg * 0.01745329238474369f;
     }
@@ -618,8 +585,6 @@ public class VoxyRenderSystem {
     private static Matrix4f makeProjectionMatrix(Matrix4fc baseProjection, float near, float far) {
         var projection = new Matrix4f();
         var client = Minecraft.getInstance();
-        // Extract the actual FOV from the base projection matrix so we respect all FOV modifiers
-        // (potions, zoom, speed, etc.) rather than just the raw options slider value.
         float fovY = extractFovFromProjection(baseProjection);
         projection.setPerspective(fovY,
                 (float) client.getWindow().getWidth() / (float)client.getWindow().getHeight(),
@@ -633,20 +598,8 @@ public class VoxyRenderSystem {
         // at short render distances the vanilla terrain doesnt end up covering the 16f near plane voxy uses
         // meaning that it explodes (due to near plane clipping).. _badly_ with the rastered culling being wrong in rare cases for the immediate
         // sections rendered after the vanilla render distance
-        float nearVoxy = DHImpersonationSemantics.getNearPlaneBlocks();
-        // Match projection semantics to the same runtime DH impersonation gate used by
-        // uniforms/samplers/macros. Property-only gating can drift from runtime patch state.
-        boolean dhImpersonationActive = IrisShaderPatch.shouldImpersonateDistantHorizons();
-        float farVoxy = dhImpersonationActive ? DHImpersonationSemantics.getFarPlaneBlocks() : 16 * 3000;
-        if (dhImpersonationActive && !loggedDhProjectionSemantics) {
-            loggedDhProjectionSemantics = true;
-            Logger.info("[DIAG] DH impersonation projection semantics active: near="
-                    + nearVoxy
-                    + " far="
-                    + farVoxy
-                    + " dhRenderDistance="
-                    + DHImpersonationSemantics.getRenderDistanceBlocks());
-        }
+        float nearVoxy = 16.0f;
+        float farVoxy = 16 * 3000;
 
         return base.mulLocal(
                 makeProjectionMatrix(base, 0.05f, Minecraft.getInstance().gameRenderer.getDepthFar()).invert(),
@@ -677,9 +630,46 @@ public class VoxyRenderSystem {
         return this.viewportSelector.getViewport();
     }
 
-    // Used by uniform/sampler providers that must remain valid during Iris shadow pass setup.
     public Viewport<?> getViewportForUniforms() {
         return this.viewportSelector.getViewport();
+    }
+
+    /**
+     * Force-blits Voxy LOD depth into the main vanilla framebuffer so that vanilla
+     * geometry rendered afterwards (clouds, sky) depth-tests correctly against LODs.
+     *
+     * Called from MixinLevelRendererClouds before renderClouds() fires.
+     * Needed because IrisVoxyRenderPipeline.finish() skips the depth blit when
+     * excludeLodsFromVanillaDepth=true (Iris manages its own depth compositing),
+     * but vanilla clouds always read from the main FB depth — so without this call
+     * clouds appear in front of LODs even at distant ranges.
+     *
+     * No-op when:
+     * - Not using IrisVoxyRenderPipeline (NormalRenderPipeline always blits depth in finish())
+     * - renderToVanillaDepth is already true (finish() already blitted it)
+     * - No current viewport (shadow pass or pre-world)
+     * - Framebuffer not yet bound (cachedFramebufferId == 0)
+     */
+    public void blitDepthBeforeClouds() {
+        if (!(this.pipeline instanceof IrisVoxyRenderPipeline irisPipe)) return;
+        if (irisPipe.data.renderToVanillaDepth) return; // finish() already blitted
+        var viewport = this.getViewport();
+        if (viewport == null) return;
+        if (this.cachedFramebufferId == 0) return;
+        if (this.cachedViewportW != viewport.width || this.cachedViewportH != viewport.height) return;
+        // fbTranslucent.depthBuffer is null until the first runPipeline() call resizes it.
+        // Guard here so clouds on the very first frame (before any LOD render) don't crash.
+        var depthTex = irisPipe.fbTranslucent.getDepthTex();
+        if (depthTex == null) return;
+
+        glColorMask(false, false, false, false);
+        AbstractRenderPipeline.transformBlitDepth(
+                irisPipe.depthBlit,
+                depthTex.id,
+                this.cachedFramebufferId,
+                viewport,
+                new org.joml.Matrix4f(viewport.vanillaProjection).mul(viewport.modelView));
+        glColorMask(true, true, true, true);
     }
 
 
@@ -740,27 +730,19 @@ public class VoxyRenderSystem {
     }
 
     private static long getGeometryBufferSize() {
-        long geometryCapacity = Math.min((1L<<(64-Long.numberOfLeadingZeros(Capabilities.INSTANCE.ssboMaxSize-1)))<<1, 1L<<32)-1024/*(1L<<32)-1024*/;
+        long geometryCapacity = Math.min((1L<<(64-Long.numberOfLeadingZeros(Capabilities.INSTANCE.ssboMaxSize-1)))<<1, 1L<<32)-1024;
         if (Capabilities.INSTANCE.isIntel) {
-            geometryCapacity = Math.max(geometryCapacity, 1L<<30);//intel moment, force min 1gb
+            geometryCapacity = Math.max(geometryCapacity, 1L<<30);
         }
         if (Capabilities.INSTANCE.isNvidia && Capabilities.INSTANCE.sparseBuffer) {
-            // Sparse buffers on NVIDIA reserve virtual address space; aggressive free-VRAM limiting
-            // causes avoidable capacity thrash after pipeline rebuilds.
             geometryCapacity = Math.max(geometryCapacity, SPARSE_GEOMETRY_MIN_BYTES);
         }
 
-        //Limit to available dedicated memory if possible
         if (Capabilities.INSTANCE.canQueryGpuMemory && !(Capabilities.INSTANCE.isNvidia && Capabilities.INSTANCE.sparseBuffer)) {
-            //512mb less than avalible,
-            long limit = Capabilities.INSTANCE.getFreeDedicatedGpuMemory() - (long)(1.5*1024*1024*1024);//1.5gb vram buffer
-            // Give a minimum of 512 mb requirement
+            long limit = Capabilities.INSTANCE.getFreeDedicatedGpuMemory() - (long)(1.5*1024*1024*1024);
             limit = Math.max(512*1024*1024, limit);
-
             geometryCapacity = Math.min(geometryCapacity, limit);
         }
-        //geometryCapacity = 1<<28;
-        //geometryCapacity = 1<<30;//1GB test
         var override = System.getProperty("voxy.geometryBufferSizeOverrideMB", "");
         if (!override.isEmpty()) {
             geometryCapacity = Long.parseLong(override)*1024L*1024L;

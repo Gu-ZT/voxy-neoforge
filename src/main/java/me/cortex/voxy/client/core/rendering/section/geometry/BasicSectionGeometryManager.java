@@ -25,7 +25,7 @@ public class BasicSectionGeometryManager extends AbstractSectionGeometryManager 
         super(maxSectionCount, geometryCapacity);
         this.allocationSet = new HierarchicalBitSet(maxSectionCount);
         this.sectionMetadataBuffer = new GlBuffer((long) maxSectionCount * SECTION_METADATA_SIZE);
-        this.geometry = new BufferArena(geometryCapacity, GeometryFormat.QUAD_BYTES);
+        this.geometry = new BufferArena(geometryCapacity, 8);//8 bytes per quad (ivec2)
     }
 
     @Override
@@ -83,14 +83,8 @@ public class BasicSectionGeometryManager extends AbstractSectionGeometryManager 
         if (geometryPtr == -1) {
             throw new IllegalStateException("Unable to upload section geometry as geometry buffer is full");
         }
-        return new SectionMeta(
-                geometry.position,
-                geometry.aabb,
-                geometryPtr,
-                (int) (geometry.geometryBuffer.size / GeometryFormat.QUAD_BYTES),
-                geometry.offsets,
-                geometry.childExistence
-        );
+        //8 bytes per quad (ivec2)
+        return new SectionMeta(geometry.position, geometry.aabb, geometryPtr, (int) (geometry.geometryBuffer.size / 8), geometry.offsets, geometry.childExistence);
     }
 
     //TODO: move child existence to and external thing to not get confused

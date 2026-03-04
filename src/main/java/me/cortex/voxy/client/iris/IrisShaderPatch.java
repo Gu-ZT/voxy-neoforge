@@ -26,24 +26,23 @@ import static org.lwjgl.opengl.GL33.*;
 public class IrisShaderPatch {
     public static final int VERSION = ((IntSupplier)()->1).getAsInt();
 
-    private static final String IMPERSONATE_DH_PROPERTY = "voxy.impersonateDHShader";
-    private static final boolean IMPERSONATE_DH_PROPERTY_SET = System.getProperty(IMPERSONATE_DH_PROPERTY) != null;
-    private static volatile boolean impersonateDistantHorizons =
-            System.getProperty(IMPERSONATE_DH_PROPERTY, "false").equalsIgnoreCase("true");
+    private static volatile CompatibilityMode activeCompatibilityMode;
 
-    public static boolean shouldImpersonateDistantHorizons() {
-        return impersonateDistantHorizons;
+    public static void updateActiveCompatibility(IrisShaderPatch patch) {
+        if (patch == null) {
+            activeCompatibilityMode = null;
+            return;
+        }
+        activeCompatibilityMode = patch.getCompatibilityMode();
     }
 
-    public static void enableDistantHorizonsImpersonation() {
-        if (!IMPERSONATE_DH_PROPERTY_SET) {
-            impersonateDistantHorizons = true;
-        }
+    public static boolean shouldApplyGlobalFogOverride() {
+        CompatibilityMode mode = activeCompatibilityMode;
+        return mode != CompatibilityMode.VOXY_PATCH;
     }
 
     public enum CompatibilityMode {
         VOXY_PATCH,
-        DH_NATIVE_CANDIDATE,
         FALLBACK
     }
 
@@ -196,10 +195,6 @@ public class IrisShaderPatch {
         public boolean excludeLodsFromVanillaDepth;
         public float[] renderScale;
         public boolean useViewportDims;
-        // When true, Voxy injects #define DISTANT_HORIZONS and provides dhDepthTex / dhProjection
-        // uniforms so the shader pack treats Voxy LODs as DH geometry in its deferred passes.
-        // Required for packs that fix fog and cloud occlusion via the DH code path (e.g. Complementary Unbound).
-        public boolean dhImpersonation;
         //public boolean deferTranslucentRendering;
         public String checkValid() {
             if (this.blending != null) {
@@ -290,10 +285,6 @@ public class IrisShaderPatch {
         return !this.patchData.excludeLodsFromVanillaDepth;
     }
 
-    public boolean isDhImpersonation() {
-        return this.patchData.dhImpersonation;
-    }
-
     public float[] getRenderScale() {
         if (this.patchData.renderScale == null || this.patchData.renderScale.length==0) {
             return new float[]{1,1};
@@ -362,8 +353,14 @@ public class IrisShaderPatch {
     }
 
     public static IrisShaderPatch makeFallbackPatch(ShaderPack pack, ProgramSet programSet) {
-        int[] opaqueBuffers = resolveDrawBuffers(programSet, ProgramId.TerrainSolid, ProgramId.Terrain, ProgramId.Basic);
-        int[] translucentBuffers = resolveDrawBuffers(programSet, ProgramId.Water, ProgramId.BlockTrans, ProgramId.Terrain);
+        boolean hasDhBufferPrograms = hasDhPrograms(programSet);
+
+        int[] opaqueBuffers = hasDhBufferPrograms
+                ? resolveDrawBuffers(programSet, ProgramId.DhTerrain, ProgramId.TerrainSolid, ProgramId.Terrain, ProgramId.Basic)
+                : resolveDrawBuffers(programSet, ProgramId.TerrainSolid, ProgramId.Terrain, ProgramId.Basic);
+        int[] translucentBuffers = hasDhBufferPrograms
+                ? resolveDrawBuffers(programSet, ProgramId.DhWater, ProgramId.DhTerrain, ProgramId.Water, ProgramId.BlockTrans, ProgramId.Terrain)
+                : resolveDrawBuffers(programSet, ProgramId.Water, ProgramId.BlockTrans, ProgramId.Terrain);
 
         PatchGson patchData = new PatchGson();
         patchData.version = VERSION;
@@ -375,9 +372,13 @@ public class IrisShaderPatch {
         patchData.translucentPatchData = buildFallbackPatch(translucentBuffers);
         patchData.excludeLodsFromVanillaDepth = false;
         patchData.useViewportDims = true;
-
-        CompatibilityMode mode = hasDhPrograms(programSet) ? CompatibilityMode.DH_NATIVE_CANDIDATE : CompatibilityMode.FALLBACK;
-        return new IrisShaderPatch(patchData, pack, mode);
+        CompatibilityMode fallbackMode = CompatibilityMode.FALLBACK;
+        Logger.info("[IrisShaderPatch] makeFallbackPatch:"
+                + " mode=" + fallbackMode
+                + " hasDhPrograms=" + hasDhBufferPrograms
+                + " opaqueBuffers=" + java.util.Arrays.toString(opaqueBuffers)
+                + " translucentBuffers=" + java.util.Arrays.toString(translucentBuffers));
+        return new IrisShaderPatch(patchData, pack, fallbackMode);
     }
 
     private static boolean hasDhPrograms(ProgramSet programSet) {
@@ -450,9 +451,9 @@ public class IrisShaderPatch {
             builder.append("layout(location = ").append(i).append(") out vec4 outColour").append(i).append(";\n");
         }
 
-        // Varyings emitted by quads3.vert for directional lighting
-        builder.append("layout(location = 5) in vec3 vViewPos;\n")
-               .append("layout(location = 6) in flat vec3 vWorldNormal;\n\n");
+        // NOTE: vViewPos (location=5) and vWorldNormal (location=6) are already declared
+        // in quads.frag (the base shader). Do NOT re-declare them here — duplicate
+        // layout(location=N) in declarations are a GLSL compile error (C1038).
 
         builder.append("\nvoid voxy_emitFragment(VoxyFragmentParameters parameters) {\n")
                 .append("    vec4 colour = parameters.sampledColour;\n")
@@ -530,8 +531,39 @@ public class IrisShaderPatch {
         return builder.toString();
     }
 
+    private static final String[] PATCH_FILE_SEARCH_PREFIXES = new String[]{
+            "",
+            "program/",
+            "shaders/program/",
+            "world0/",
+            "world1/",
+            "world-1/",
+            "../",
+            "../program/",
+            "../shaders/program/"
+    };
+
+    private static String resolvePatchFile(AbsolutePackPath directory, Function<AbsolutePackPath, String> sourceProvider, String fileName) {
+        for (String prefix : PATCH_FILE_SEARCH_PREFIXES) {
+            try {
+                String data = sourceProvider.apply(directory.resolve(prefix + fileName));
+                if (data != null && !data.isBlank()) {
+                    if (!prefix.isEmpty()) {
+                        Logger.info("Resolved shader patch file '" + fileName + "' via fallback path prefix '" + prefix + "'");
+                    }
+                    return data;
+                }
+            } catch (Throwable ignored) {
+                // Continue scanning alternative locations.
+            }
+        }
+        Logger.info("[IrisShaderPatch] resolvePatchFile: '" + fileName + "' not found under any prefix for directory=" + directory);
+        return null;
+    }
+
     public static IrisShaderPatch makePatch(ShaderPack ipack, AbsolutePackPath directory, Function<AbsolutePackPath, String> sourceProvider) {
-        String voxyPatchData = sourceProvider.apply(directory.resolve("voxy.json"));
+        String voxyPatchData = resolvePatchFile(directory, sourceProvider, "voxy.json");
+        Logger.info("[IrisShaderPatch] makePatch: directory=" + directory + " voxyPatchData=" + (voxyPatchData == null ? "null" : "found, length=" + voxyPatchData.length()));
         if (voxyPatchData == null) {//No voxy patch data in shaderpack
             return null;
         }
@@ -540,6 +572,20 @@ public class IrisShaderPatch {
         if (voxyPatchData.isBlank()) {
             return null;
         }
+
+        // Strip "unusedString" fields used by some packs (e.g. Photon) as a preprocessor
+        // comment wrapper. Iris's JcppProcessor expands any #include directives inside
+        // these string values before we read them, injecting raw GLSL with unescaped
+        // quotes into the JSON string value — making the field non-parseable.
+        //
+        // In Photon's voxy.json the field closes with `",` on its own line (the original
+        // source ends the multi-line string literal with `        ",`). After Iris expands
+        // the #include, only the interior changes; the closing `",` at the line start is
+        // preserved. We strip from "unusedString": through that closing `",` on a line
+        // that has only whitespace before the quote, plus an optional trailing comma.
+        // Pattern: matches from "unusedString"\s*:\s*" through the next `",` (or `"`)
+        // that appears at the very start of a line (possibly with whitespace only before it).
+        voxyPatchData = voxyPatchData.replaceAll("(?m)\"unusedString\"\\s*:[\\s\\S]*?^\\s*\",", "");
 
         //Escape things
         voxyPatchData = voxyPatchData.replace("\\", "\\\\");
@@ -568,18 +614,18 @@ public class IrisShaderPatch {
             }
 
             {//Inject data from the auxilery files if they are present
-                var opaque = sourceProvider.apply(directory.resolve("voxy_opaque.glsl"));
+                var opaque = resolvePatchFile(directory, sourceProvider, "voxy_opaque.glsl");
                 if (opaque != null) {
                     Logger.info("External opaque shader patch applied");
                     patchData.opaquePatchData = opaque;
                 }
-                var translucent = sourceProvider.apply(directory.resolve("voxy_translucent.glsl"));
+                var translucent = resolvePatchFile(directory, sourceProvider, "voxy_translucent.glsl");
                 if (translucent != null) {
                     Logger.info("External translucent shader patch applied");
                     patchData.translucentPatchData = translucent;
                 }
                 //This might be ok? not.. sure if is nice or not
-                var taa = sourceProvider.apply(directory.resolve("voxy_taa.glsl"));
+                var taa = resolvePatchFile(directory, sourceProvider, "voxy_taa.glsl");
                 if (taa != null) {
                     Logger.info("External taa shader patch applied");
                     patchData.taaOffset = taa;
@@ -591,9 +637,12 @@ public class IrisShaderPatch {
                 throw new IllegalStateException("voxy json patch not valid: " + invalidPatchDataReason);
             }
         } catch (Exception e) {
-            patchData = null;
-            Logger.error("Failed to parse patch data gson",e);
-            throw new ShaderLoadError("Failed to parse patch data gson",e);
+            // Log but do not abort — packs like Photon use GLSL #ifdef preprocessor directives
+            // inside voxy.json, which Iris preprocesses before we read them. The resulting JSON
+            // may be invalid (e.g. trailing commas after stripped #ifdef blocks). Fall through to
+            // makeFallbackPatch so the pack still renders, just without the voxy.json tweaks.
+            Logger.warn("[IrisShaderPatch] Failed to parse voxy.json (likely preprocessor-conditional JSON): " + e.getMessage());
+            return null;
         }
         if (patchData == null) {
             return null;
@@ -602,6 +651,21 @@ public class IrisShaderPatch {
             Logger.error("Shader has voxy patch data, but patch version is incorrect. expected " + VERSION + " got "+patchData.version);
             throw new IllegalStateException("Shader version mismatch expected " + VERSION + " got "+patchData.version);
         }
+        // Log parsed voxy.json fields for diagnostics
+        Logger.info("[IrisShaderPatch] voxy.json parsed OK:"
+                + " version=" + patchData.version
+                + " mode=VOXY_PATCH"
+                + " excludeLodsFromVanillaDepth=" + patchData.excludeLodsFromVanillaDepth
+                + " useViewportDims=" + patchData.useViewportDims
+                + " renderScale=" + java.util.Arrays.toString(patchData.renderScale)
+                + " opaqueDrawBuffers=" + java.util.Arrays.toString(patchData.opaqueDrawBuffers)
+                + " translucentDrawBuffers=" + java.util.Arrays.toString(patchData.translucentDrawBuffers)
+                + " uniforms[" + (patchData.uniforms == null ? 0 : patchData.uniforms.length) + "]=" + java.util.Arrays.toString(patchData.uniforms)
+                + " samplers=" + (patchData.samplers == null ? "null" : patchData.samplers.keySet())
+                + " ssbos=" + (patchData.ssbos == null ? "null" : patchData.ssbos.keySet())
+                + " taaOffset=" + (patchData.taaOffset == null ? "null" : "present(len=" + patchData.taaOffset.length() + ")")
+                + " opaquePatch=" + (patchData.opaquePatchData == null ? "null" : "len=" + patchData.opaquePatchData.length())
+                + " translucentPatch=" + (patchData.translucentPatchData == null ? "null" : "len=" + patchData.translucentPatchData.length()));
         return new IrisShaderPatch(patchData, ipack, CompatibilityMode.VOXY_PATCH);
     }
 }

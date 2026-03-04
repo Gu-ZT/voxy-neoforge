@@ -13,6 +13,7 @@
     "minecraft.MixinFogRenderer",
     "minecraft.MixinLayerLightSectionStorage",
     "minecraft.MixinLevelRenderer",
+    "minecraft.MixinLevelRendererClouds",
     "minecraft.MixinMinecraft",
     "minecraft.MixinRenderSystem",
     "minecraft.MixinWindow",

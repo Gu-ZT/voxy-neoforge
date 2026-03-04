@@ -88,14 +88,7 @@ public class NodeManager {
     public final int maxNodeCount;
     private final IntOpenHashSet topLevelNodeIds = new IntOpenHashSet();
     private final LongOpenHashSet topLevelNodes = new LongOpenHashSet();
-    private final LongOpenHashSet deferredLeafRequestRerun = new LongOpenHashSet();
-    private static final long REQUEST_INFLIGHT_SUMMARY_INTERVAL_MS = 5_000L;
-    private long nextRequestInflightSummaryMs;
-    private int requestInflightSummaryEvents;
-    private int requestInflightSuppressedEvents;
     private int activeNodeRequestCount;
-    private long requestInflightDeferredCount;
-    private long requestRerunExecutedCount;
 
     private IntConsumer topLevelNodeIdAddedCallback;
     private IntConsumer topLevelNodeIdRemovedCallback;
@@ -130,52 +123,6 @@ public class NodeManager {
         this.geometryManager = geometryManager;
     }
 
-    private void maybeRerunDeferredRequest(long pos) {
-        if (!this.deferredLeafRequestRerun.remove(pos)) {
-            return;
-        }
-
-        int nodeRef = this.activeSectionMap.get(pos);
-        if (nodeRef == -1) {
-            return;
-        }
-
-        int nodeType = nodeRef & NODE_TYPE_MSK;
-        if (nodeType == NODE_TYPE_REQUEST) {
-            this.deferredLeafRequestRerun.add(pos);
-            return;
-        }
-
-        int nodeId = nodeRef & NODE_ID_MSK;
-        if (this.nodeData.isNodeRequestInFlight(nodeId)) {
-            this.deferredLeafRequestRerun.add(pos);
-            return;
-        }
-
-        this.requestRerunExecutedCount++;
-        this.processRequest(pos);
-    }
-
-    private void maybeLogInflightSummary() {
-        long now = System.currentTimeMillis();
-        if (now < this.nextRequestInflightSummaryMs) {
-            return;
-        }
-        this.nextRequestInflightSummaryMs = now + REQUEST_INFLIGHT_SUMMARY_INTERVAL_MS;
-
-        int unique = this.requestInflightSummaryEvents;
-        int suppressed = this.requestInflightSuppressedEvents;
-        this.requestInflightSummaryEvents = 0;
-        this.requestInflightSuppressedEvents = 0;
-
-        if (unique == 0 && suppressed == 0) {
-            return;
-        }
-        Logger.warn("Inflight request summary: deferred=" + unique
-                + " suppressed=" + suppressed
-                + " pending_reruns=" + this.deferredLeafRequestRerun.size());
-    }
-
     private static void assertPosValid(long pos) {
         int lvl = WorldEngine.getLevel(pos);
         int x = WorldEngine.getX(pos);
@@ -197,6 +144,9 @@ public class NodeManager {
         //Verify that pos is actually valid
         assertPosValid(pos);
 
+        if ((pos&0xF) != 0) {
+            throw new IllegalStateException("BAD POS !! YOU DID SOMETHING VERY BAD");
+        }
         if (this.activeSectionMap.containsKey(pos)) {
             Logger.error("Tried inserting top level pos " + WorldEngine.pprintPos(pos) + " but it was in active map, discarding!");
             return;
@@ -724,7 +674,6 @@ public class NodeManager {
 
     //Recursivly fully removes all nodes and children
     private void _recurseRemoveNode(long pos, boolean onlyRemoveChildren) {
-        this.deferredLeafRequestRerun.remove(pos);
         //NOTE: this also removes from the section map
         int nodeId;
         if (onlyRemoveChildren) {
@@ -919,7 +868,6 @@ public class NodeManager {
 
             //Invalidate parent
             this.invalidateNode(parentNodeId);
-            this.maybeRerunDeferredRequest(request.getPosition());
 
             //TODO: verify things here
             return;
@@ -948,7 +896,7 @@ public class NodeManager {
 
                     //TODO: make into warning or log error
                     //throw new IllegalStateException("Request result with child existence of 0");
-                    Logger.warn("Request result with child existence of 0, for child pos " + WorldEngine.pprintPos(childPos));
+
                 }
                 this.nodeData.setNodeChildExistence(childNodeId, childExistence);
                 this.nodeData.setNodeGeometry(childNodeId, request.getChildMesh(childIdx));
@@ -991,7 +939,6 @@ public class NodeManager {
                 //Since this node isnt a leaf node anymore
                 this.nodeData.setAllChildrenAreLeaf(ppnId&NODE_ID_MSK, false);
             }
-            this.maybeRerunDeferredRequest(request.getPosition());
         } else if (parentNodeType==NODE_TYPE_INNER) {
             //For this, only need to add the nodes to the existing child set thing (shuffle around whatever) dont ever have to remove nodes
 
@@ -1116,7 +1063,6 @@ public class NodeManager {
 
             //Invalidate parent
             this.invalidateNode(parentNodeId);
-            this.maybeRerunDeferredRequest(request.getPosition());
         } else {
             throw new IllegalStateException();
         }
@@ -1185,13 +1131,7 @@ public class NodeManager {
 
             //Check if the node is already in-flight, if it is, dont do any processing
             if (this.nodeData.isNodeRequestInFlight(nodeId)) {
-                if (this.deferredLeafRequestRerun.add(pos)) {
-                    this.requestInflightDeferredCount++;
-                    this.requestInflightSummaryEvents++;
-                } else {
-                    this.requestInflightSuppressedEvents++;
-                }
-                this.maybeLogInflightSummary();
+                Logger.warn("Tried processing a node that already has a request in flight: " + nodeId + " pos: " + WorldEngine.pprintPos(pos) + " ignoring");
                 return;
             }
 
@@ -1467,7 +1407,7 @@ public class NodeManager {
                 (WorldEngine.getZ(basePos)<<1)|((addin>>1)&1));
     }
 
-    private static long makeParentPos(long pos) {
+    private long makeParentPos(long pos) {
         int lvl = WorldEngine.getLevel(pos);
         if (lvl == MAX_LOD_LAYER) {
             throw new IllegalArgumentException("Cannot create a parent higher than LoD " + (MAX_LOD_LAYER));

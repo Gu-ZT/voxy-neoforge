@@ -39,6 +39,7 @@ import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.lighting.LevelLightEngine;
 import net.minecraft.world.level.material.FluidState;
+import net.neoforged.neoforge.client.extensions.common.IClientFluidTypeExtensions;
 import org.jetbrains.annotations.Nullable;
 import org.lwjgl.system.MemoryUtil;
 
@@ -395,11 +396,23 @@ public class ModelFactory {
             }
         }
 
-        var colourProvider = getColourProvider(blockState.getBlock());
+        // For LiquidBlock states, use IClientFluidTypeExtensions (the NeoForge fluid tint API)
+        // instead of BlockColors — this matches what LiquidBlockRenderer.tesselate() actually uses.
+        // For all other blocks, fall through to the standard BlockColors path.
+        BlockColor colourProvider;
+        if (isFluid) {
+            colourProvider = getFluidColourProvider(blockState.getFluidState());
+        } else {
+            colourProvider = getColourProvider(blockState.getBlock());
+        }
 
         boolean isBiomeColourDependent = false;
         if (colourProvider != null) {
-            isBiomeColourDependent = isBiomeDependentColour(colourProvider, blockState);
+            if (isFluid) {
+                isBiomeColourDependent = isFluidBiomeDependentColour(blockState.getFluidState());
+            } else {
+                isBiomeColourDependent = isBiomeDependentColour(colourProvider, blockState);
+            }
         }
 
         ModelEntry entry;
@@ -881,6 +894,70 @@ public class ModelFactory {
         return biomeDependent[0];
     }
 
+    /**
+     * Creates a BlockColor-like provider for fluid blocks that uses NeoForge's
+     * IClientFluidTypeExtensions.getTintColor() — the same API that LiquidBlockRenderer uses.
+     * This ensures LOD fluid tint matches what NeoForge's renderer actually produces.
+     * Returns null if the fluid has a pure-white constant tint (e.g. lava) with no biome dependence.
+     */
+    @Nullable
+    private static BlockColor getFluidColourProvider(FluidState fluidState) {
+        var ext = IClientFluidTypeExtensions.of(fluidState);
+        // Probe: does the fluid call getBlockTint (= biome dependent)?
+        // Use a black-returning getter — if the result is still white the tint ignores biome.
+        boolean[] calledGetBlockTint = new boolean[1];
+        int[] capturedTint = new int[1];
+        var probeGetter = new BlockAndTintGetter() {
+            @Override public float getShade(Direction direction, boolean shaded) { return 0; }
+            @Override public int getBrightness(LightLayer type, BlockPos pos) { return 0; }
+            @Override public LevelLightEngine getLightEngine() { return null; }
+            @Override public int getBlockTint(BlockPos pos, ColorResolver colorResolver) {
+                calledGetBlockTint[0] = true;
+                return 0x000000; // black — so any biome-routed call is distinguishable
+            }
+            @Override @Nullable public BlockEntity getBlockEntity(BlockPos pos) { return null; }
+            @Override public BlockState getBlockState(BlockPos pos) { return fluidState.createLegacyBlock(); }
+            @Override public FluidState getFluidState(BlockPos pos) { return fluidState; }
+            @Override public int getHeight() { return 0; }
+            public int getMinY() { return 0; }
+            @Override public int getMinBuildHeight() { return 0; }
+        };
+        capturedTint[0] = ext.getTintColor(fluidState, probeGetter, BlockPos.ZERO);
+        int rgb = capturedTint[0] & 0x00FFFFFF;
+        // No tinting needed if: constant white (0xFFFFFF) AND not biome-dependent
+        if (!calledGetBlockTint[0] && rgb == 0x00FFFFFF) {
+            return null; // e.g. lava or fluids with pure-white constant tint
+        }
+        // Non-trivial tint (water, modded fluids) — wrap the extension as a BlockColor.
+        return (state, level, pos, tintIndex) -> ext.getTintColor(fluidState, level, pos) & 0x00FFFFFF;
+    }
+
+    /**
+     * Detects whether a fluid's tint is biome-dependent by checking if the extension
+     * calls level.getBlockTint() (biome colour dispatch).
+     */
+    private static boolean isFluidBiomeDependentColour(FluidState fluidState) {
+        var ext = IClientFluidTypeExtensions.of(fluidState);
+        boolean[] biomeDependent = new boolean[1];
+        var getter = new BlockAndTintGetter() {
+            @Override public float getShade(Direction direction, boolean shaded) { return 0; }
+            @Override public int getBrightness(LightLayer type, BlockPos pos) { return 0; }
+            @Override public LevelLightEngine getLightEngine() { return null; }
+            @Override public int getBlockTint(BlockPos pos, ColorResolver colorResolver) {
+                biomeDependent[0] = true;
+                return 0;
+            }
+            @Override @Nullable public BlockEntity getBlockEntity(BlockPos pos) { return null; }
+            @Override public BlockState getBlockState(BlockPos pos) { return fluidState.createLegacyBlock(); }
+            @Override public FluidState getFluidState(BlockPos pos) { return fluidState; }
+            @Override public int getHeight() { return 0; }
+            public int getMinY() { return 0; }
+            @Override public int getMinBuildHeight() { return 0; }
+        };
+        ext.getTintColor(fluidState, getter, BlockPos.ZERO);
+        return biomeDependent[0];
+    }
+
     private static float[] computeModelDepth(ColourDepthTextureData[] textures, int checkMode) {
         float[] res = new float[6];
         for (var dir : Direction.values()) {
@@ -911,6 +988,29 @@ public class ModelFactory {
 
     public boolean hasModelForBlockId(int blockId) {
         return this.idMappings[blockId] != -1;
+    }
+
+    /**
+     * Register a permanently-failing block ID as air (model 0).
+     * Called by RenderGenerationService after too many failed bake attempts.
+     * Idempotent — safe to call multiple times for the same ID.
+     *
+     * NOTE: We intentionally do NOT remove the block from blockStatesInFlight.
+     * If the GPU bakery eventually finishes baking the block, processTextureBakeResult
+     * will overwrite idMappings[blockId] with the real model, replacing the air fallback.
+     * This is preferable: the block transitions from "air" to "correct model" transparently.
+     */
+    public void registerAirFallback(int blockId) {
+        if (this.idMappings[blockId] == -1) {
+            this.idMappings[blockId] = 0; // 0 = air model
+            // Log the block state name for debugging
+            try {
+                var blockState = this.mapper.getBlockStateFromBlockId(blockId);
+                Logger.warn("[ModelFactory] Block ID " + blockId + " (" + blockState + ") is taking too long to bake — temporarily rendering as air in LODs");
+            } catch (Exception ex) {
+                Logger.warn("[ModelFactory] Block ID " + blockId + " is taking too long to bake — temporarily rendering as air in LODs (state lookup failed: " + ex.getMessage() + ")");
+            }
+        }
     }
 
     public int getFluidClientStateId(int clientBlockStateId) {

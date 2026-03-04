@@ -28,26 +28,18 @@ public class MixinProgramSet implements IGetVoxyPatchData {
     @Inject(method = "<init>", at = @At(value = "INVOKE", target = "Lnet/irisshaders/iris/shaderpack/programs/ProgramSet;locateDirectives()V", shift = At.Shift.BEFORE))
     private void voxy$injectPatchMaker(AbsolutePackPath directory, Function<AbsolutePackPath, String> sourceProvider, ShaderProperties shaderProperties, ShaderPack pack, CallbackInfo ci) {
         if (VoxyConfig.CONFIG.isRenderingEnabled() && IrisUtil.SHADER_SUPPORT) {
-            this.patchData = IrisShaderPatch.makePatch(pack, directory, sourceProvider);
-            if (this.patchData == null && VoxyConfig.CONFIG.enableShaderPackFallbackPatch()) {
-                this.patchData = IrisShaderPatch.makeFallbackPatch(pack, (ProgramSet)(Object)this);
-                if (this.patchData.getCompatibilityMode() == IrisShaderPatch.CompatibilityMode.DH_NATIVE_CANDIDATE) {
-                    Logger.warn("Shader pack has DH programs but no voxy.json; using fallback patch (DH-native path pending)");
-                } else {
-                    Logger.warn("Shader pack has no voxy.json and no DH programs; using fallback patch");
+            try {
+                this.patchData = IrisShaderPatch.makePatch(pack, directory, sourceProvider);
+                if (this.patchData == null && VoxyConfig.CONFIG.enableShaderPackFallbackPatch()) {
+                    this.patchData = IrisShaderPatch.makeFallbackPatch(pack, (ProgramSet)(Object)this);
+                    Logger.warn("Shader pack has no voxy.json; using fallback patch");
                 }
+            } finally {
+                // Always sync state — patchData is null if construction threw, ensuring a clean reset.
+                IrisShaderPatch.updateActiveCompatibility(this.patchData);
             }
+
             if (this.patchData != null) {
-                if (this.patchData.getCompatibilityMode() == IrisShaderPatch.CompatibilityMode.DH_NATIVE_CANDIDATE) {
-                    IrisShaderPatch.enableDistantHorizonsImpersonation();
-                } else if (this.patchData.getCompatibilityMode() == IrisShaderPatch.CompatibilityMode.VOXY_PATCH
-                        && this.patchData.isDhImpersonation()) {
-                    // Shader pack has a voxy.json that explicitly requests DH impersonation.
-                    // This injects #define DISTANT_HORIZONS and wires dhDepthTex/dhProjection uniforms
-                    // so the pack's deferred fog and cloud-occlusion paths work correctly for LOD geometry.
-                    IrisShaderPatch.enableDistantHorizonsImpersonation();
-                    Logger.info("Voxy DH impersonation enabled via voxy.json dhImpersonation flag");
-                }
                 Logger.info("Voxy shader compatibility mode: " + this.patchData.getCompatibilityMode());
             }
         }

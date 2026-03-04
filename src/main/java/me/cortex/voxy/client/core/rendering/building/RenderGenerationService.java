@@ -2,6 +2,7 @@ package me.cortex.voxy.client.core.rendering.building;
 
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.client.core.model.IdNotYetComputedException;
 import me.cortex.voxy.client.core.model.ModelBakerySubsystem;
 import me.cortex.voxy.common.thread.Service;
@@ -24,10 +25,11 @@ import java.util.function.Consumer;
 // and process accordingly
 public class RenderGenerationService {
     private static final int MAX_HOLDING_SECTION_COUNT = 1000;
-    private static final int DISTANCE_BUCKET_BITS = 20;
-    private static final long DISTANCE_BUCKET_MASK = (1L << DISTANCE_BUCKET_BITS) - 1L;
+    /** After this many failed attempts, permanently-failing block IDs are mapped to air. */
+    private static final int MAX_BAKE_ATTEMPTS = 300;
 
     public static final AtomicInteger MESH_FAILED_COUNTER = new AtomicInteger();
+    public static final AtomicInteger MESH_COMPLETED_COUNTER = new AtomicInteger();
     private static final AtomicInteger COUNTER = new AtomicInteger();
     private static final class BuildTask {
         WorldSection section;
@@ -40,15 +42,11 @@ public class RenderGenerationService {
         private BuildTask(long position) {
             this.position = position;
         }
-        private void updatePriority(int originX, int originY, int originZ) {
+        private void updatePriority() {
             int unique = COUNTER.incrementAndGet();
-            long distanceBucket = computeDistanceBucket(this.position, originX, originY, originZ);
-            // Distance-first priority so near rings converge before far updates.
-            // Tie-breaks: higher-detail LODs first, then retry/adin bookkeeping.
-            int lodLevel = Math.min(7, Math.max(0, WorldEngine.getLevel(this.position)));
-            long retryClass = (Math.min(this.attempts, 3) * 2L) + this.addin;
-            long tieBreaker = ((long) lodLevel << 3) | retryClass;
-            this.priority = (((distanceBucket << 6) | tieBreaker) << 32) + Integer.toUnsignedLong(unique);
+            int lvl = WorldEngine.MAX_LOD_LAYER-WorldEngine.getLevel(this.position);
+            lvl = Math.min(lvl, 3);//Make the 2 highest quality have equal priority
+            this.priority = (((lvl*3L + Math.min(this.attempts, 3))*2 + this.addin) <<32) + Integer.toUnsignedLong(unique);
             this.addin = 0;
         }
     }
@@ -66,9 +64,6 @@ public class RenderGenerationService {
     private final boolean emitMeshlets;
 
     private final Service service;
-    private volatile int priorityOriginSectionX;
-    private volatile int priorityOriginSectionY;
-    private volatile int priorityOriginSectionZ;
 
 
     /*
@@ -88,11 +83,12 @@ public class RenderGenerationService {
             return new Pair<>(() -> {
                 this.processJob(factory, seenMissed);
             }, factory::free);
-        }, 10, "Section mesh generation service", ()->{
-            int modelBakeQueueCount = modelBakery.getProcessingCount();
-            if (modelBakeQueueCount>1000) return false;//Pause mesh gen if there is alot of model baking happening
-            return modelBakery.getProcessingCount()<400||RenderGenerationService.MESH_FAILED_COUNTER.get()<500;
-        });
+        // Limiter: only allow mesh threads to run when the model bakery is not overwhelmed
+        // OR when the failure rate is low. This prevents 10 threads from spinning in tight
+        // retry loops when hundreds of block IDs are queued for baking — the dominant source
+        // of CPU spikes during world load and camera movement into unloaded areas.
+        // Thresholds: bakery queue < 400 items, OR failures < 500 per 100ms window.
+        }, 10, "Section mesh generation service", ()->modelBakery.getProcessingCount()<400||RenderGenerationService.MESH_FAILED_COUNTER.get()<500);
     }
 
     public void setResultConsumer(Consumer<BuiltSection> consumer) {
@@ -132,34 +128,6 @@ public class RenderGenerationService {
 
     private WorldSection acquireSection(long pos) {
         return this.world.acquireIfExists(pos);
-    }
-
-    private static long computeDistanceBucket(long pos, int originX, int originY, int originZ) {
-        int lvl = WorldEngine.getLevel(pos);
-        int x = WorldEngine.getX(pos);
-        int y = WorldEngine.getY(pos);
-        int z = WorldEngine.getZ(pos);
-
-        int scale = 1 << lvl;
-        int centerX = (x << lvl) + (scale >> 1);
-        int centerY = (y << lvl) + (scale >> 1);
-        int centerZ = (z << lvl) + (scale >> 1);
-
-        long dx = (long) centerX - originX;
-        long dy = (long) centerY - originY;
-        long dz = (long) centerZ - originZ;
-
-        // Prioritize a near-player "ring" expansion: horizontal distance dominates, vertical distance is de-emphasized.
-        long horizontalDistSq = dx * dx + dz * dz;
-        long verticalPenalty = (dy * dy) >> 2;
-        long distance = horizontalDistSq + verticalPenalty;
-        return Math.min(DISTANCE_BUCKET_MASK, distance);
-    }
-
-    public void setPriorityOrigin(double cameraX, double cameraY, double cameraZ) {
-        this.priorityOriginSectionX = ((int) Math.floor(cameraX)) >> 5;
-        this.priorityOriginSectionY = ((int) Math.floor(cameraY)) >> 5;
-        this.priorityOriginSectionZ = ((int) Math.floor(cameraZ)) >> 5;
     }
 
     private static boolean putTaskFirst(long pos) {
@@ -256,7 +224,10 @@ public class RenderGenerationService {
                 if (task.hasDoneModelRequestInner && task.hasDoneModelRequestOuter) {
                     task.attempts++;
                     try {
-                        Thread.sleep(1);
+                        // Both model scan passes done but baking still in progress.
+                        // Sleep scales with attempts: 1ms, 2ms, 4ms … capped at 16ms.
+                        // This prevents 10 threads from burning CPU waiting on the GPU bakery.
+                        Thread.sleep(Math.min(1 << Math.min(task.attempts - 1, 4), 16));
                     } catch (InterruptedException ex) {
                         throw new RuntimeException(ex);
                     }
@@ -282,6 +253,27 @@ public class RenderGenerationService {
                     }
 
                     task.addin = WorldEngine.getLevel(task.position)>2?1:0;//Single time addin which gives the models time to bake before the task executes
+
+                    // After model scan requests are submitted, yield briefly so the bakery
+                    // thread pool can make progress before this section is retried.
+                    // Without this, threads spin-retry immediately at ~100µs/loop.
+                    try {
+                        Thread.sleep(1);
+                    } catch (InterruptedException ex) {
+                        throw new RuntimeException(ex);
+                    }
+                }
+
+                // Give-up path: if this block ID has failed to bake after MAX_BAKE_ATTEMPTS,
+                // register it as air so it stops blocking mesh generation for this section.
+                // This handles modded blocks whose textures/models fail to load at runtime.
+                if (task.attempts >= MAX_BAKE_ATTEMPTS && e.isIdBlockId) {
+                    if (!this.modelBakery.factory.hasModelForBlockId(e.id)) {
+                        Logger.warn("[RenderGenerationService] Block ID " + e.id + " failed to bake after " + task.attempts + " attempts — registering as air fallback");
+                        this.modelBakery.factory.registerAirFallback(e.id);
+                        // Reset attempt counter so the section can proceed immediately
+                        task.attempts = 0;
+                    }
                 }
 
                 //Keep the lock on the section, and attach it to the task, this prevents needing to re-aquire it later
@@ -295,7 +287,7 @@ public class RenderGenerationService {
                     shouldFreeSection = false;
                 }
 
-                task.updatePriority(this.priorityOriginSectionX, this.priorityOriginSectionY, this.priorityOriginSectionZ);
+                task.updatePriority();
                 this.taskQueue.add(task);
                 this.taskQueueCount.incrementAndGet();
 
@@ -313,6 +305,7 @@ public class RenderGenerationService {
         }
 
         if (mesh != null) {//If the mesh is null it means it didnt finish, so dont submit
+            MESH_COMPLETED_COUNTER.incrementAndGet();
             if (this.resultConsumer != null) {
                 this.resultConsumer.accept(mesh);
             } else {
@@ -336,7 +329,7 @@ public class RenderGenerationService {
 
         if (isOurs[0]) {//If its not ours we dont care about it
             //Set priority and insert into queue and execute
-            task.updatePriority(this.priorityOriginSectionX, this.priorityOriginSectionY, this.priorityOriginSectionZ);
+            task.updatePriority();
             this.taskQueue.add(task);
             this.taskQueueCount.incrementAndGet();
             this.service.execute();
@@ -398,9 +391,12 @@ public class RenderGenerationService {
     public void addDebugData(List<String> debug) {
         if (System.currentTimeMillis()-this.lastChangedTime > 100) {
             MESH_FAILED_COUNTER.set(0);
+            MESH_COMPLETED_COUNTER.set(0);
             this.lastChangedTime = System.currentTimeMillis();
         }
-        debug.add("RSSQ/TFC: " + this.taskQueueCount.get() + "/" + MESH_FAILED_COUNTER.get());//render section service queue, Task Fail Counter
+        // RSSQ = render section service queue depth
+        // OK/FAIL = meshes completed vs failed (per 100ms window)
+        debug.add("RSSQ: " + this.taskQueueCount.get() + " OK/FAIL: " + MESH_COMPLETED_COUNTER.get() + "/" + MESH_FAILED_COUNTER.get());
 
     }
 

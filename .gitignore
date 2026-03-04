@@ -27,6 +27,7 @@
 /scripts/logs.sh
 /scripts/tail_logs.sh
 /scripts/grep_logs.sh
+/.tmp/
 
 # macOS metadata
 .DS_Store

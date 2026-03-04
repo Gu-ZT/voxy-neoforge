@@ -10,6 +10,7 @@ import me.cortex.voxy.client.core.rendering.hierachical.HierarchicalOcclusionTra
 import me.cortex.voxy.client.core.rendering.hierachical.NodeCleaner;
 import me.cortex.voxy.client.core.rendering.post.FullscreenBlit;
 import me.cortex.voxy.client.core.rendering.section.backend.AbstractSectionRenderer;
+import me.cortex.voxy.client.core.rendering.section.geometry.BasicSectionGeometryData;
 import me.cortex.voxy.client.core.rendering.util.DepthFramebuffer;
 import me.cortex.voxy.client.core.rendering.util.DownloadStream;
 import me.cortex.voxy.client.core.util.GPUTiming;
@@ -182,7 +183,7 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
     }
 
     private static final long SCRATCH = MemoryUtil.nmemAlloc(4*4*4);
-    protected static void transformBlitDepth(FullscreenBlit blitShader, int srcDepthTex, int dstFB, Viewport<?> viewport, Matrix4f targetTransform) {
+    public static void transformBlitDepth(FullscreenBlit blitShader, int srcDepthTex, int dstFB, Viewport<?> viewport, Matrix4f targetTransform) {
         // at this point the dst frame buffer doesn't have a stencil attachment so we don't need to keep the stencil test on for the blit
         // in the worst case the dstFB does have a stencil attachment causing this pass to become 'corrupted'
         glDisable(GL_STENCIL_TEST);
@@ -239,6 +240,13 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         this.depthSetBlit.delete();
         this.depthCopy.delete();
         super.free0();
+    }
+
+    public int getSectionCount() {
+        if (this.sectionRenderer == null) return -1;
+        var gm = this.sectionRenderer.getGeometryManager();
+        if (gm instanceof BasicSectionGeometryData bsg) return bsg.getSectionCount();
+        return -1;
     }
 
     public void addDebug(List<String> debug) {

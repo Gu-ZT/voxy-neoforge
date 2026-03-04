@@ -47,12 +47,16 @@ public abstract class MixinDefaultChunkRenderer extends ShaderChunkRenderer {
         if (renderPass == DefaultTerrainRenderPasses.CUTOUT) {
             var renderer = ((IGetVoxyRenderSystem) Minecraft.getInstance().levelRenderer).getVoxyRenderSystem();
             if (renderer != null) {
-                Viewport<?> viewport = null;
-                if (false) {
-                    viewport = renderer.getViewport();
-                } else {
-                    viewport = renderer.setupViewport(matrices.projection(), matrices.modelView(), camera.x, camera.y, camera.z);
+                // Skip during Iris shadow pass: Embeddium renders CUTOUT during shadow too,
+                // so without this guard setupViewport() would cache the shadow FBO id into
+                // cachedFramebufferId. The main render then submits LODs into the shadow FB → flashing.
+                // MixinShadowRenderer handles LOD shadow rendering separately via renderShadowPass().
+                if (me.cortex.voxy.client.compat.IrisCompatManager.isShadowActive()) {
+                    return;
                 }
+                // Always call setupViewport() to refresh GL state (framebuffer ID, viewport dims,
+                // matrices) from actual GPU state each frame.
+                Viewport<?> viewport = renderer.setupViewport(matrices.projection(), matrices.modelView(), camera.x, camera.y, camera.z);
                 renderer.renderOpaque(viewport);
             }
         }

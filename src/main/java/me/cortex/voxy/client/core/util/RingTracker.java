@@ -155,108 +155,31 @@ public class RingTracker {
         if (this.operations.isEmpty()) {
             return 0;
         }
-        if (N <= 0) {
-            return 0;
-        }
-
-        // Process nearest pending updates first to keep expansion focused around the active center.
-        long[] selectedKeys = new long[N];
-        long[] selectedScores = new long[N];
-        int selectedCount = 0;
-        int worstIdx = -1;
-        long worstScore = Long.MIN_VALUE;
-
         var iter = this.operations.long2ByteEntrySet().fastIterator();
-        while (iter.hasNext()) {
+        int i = 0;
+        while (iter.hasNext() && N--!=0) {
             var entry = iter.next();
+            if (entry.getByteValue()==0) {
+                iter.remove(); N++;
+                continue;
+            }
+            i++;
             byte op = entry.getByteValue();
-            if (op == 0) {
-                iter.remove();
-                continue;
-            }
             if (op != 1 && op != -1) {
                 throw new IllegalStateException();
             }
-
+            boolean isAdd = op == 1;
             long pos = entry.getLongKey();
-            int x = (int) (pos & 0xFFFFFFFFL);
-            int z = (int) ((pos >>> 32) & 0xFFFFFFFFL);
-            long dx = (long) x - this.centerX;
-            long dz = (long) z - this.centerZ;
-            // Prefer near operations first; tie-break to adds before removals.
-            long score = ((dx * dx + dz * dz) << 1) | (op == 1 ? 0L : 1L);
-
-            if (selectedCount < N) {
-                selectedKeys[selectedCount] = pos;
-                selectedScores[selectedCount] = score;
-                if (score > worstScore) {
-                    worstScore = score;
-                    worstIdx = selectedCount;
-                }
-                selectedCount++;
-                continue;
-            }
-
-            if (score >= worstScore) {
-                continue;
-            }
-
-            selectedKeys[worstIdx] = pos;
-            selectedScores[worstIdx] = score;
-
-            // Recompute current worst among selected entries.
-            worstScore = selectedScores[0];
-            worstIdx = 0;
-            for (int i = 1; i < selectedCount; i++) {
-                if (selectedScores[i] > worstScore) {
-                    worstScore = selectedScores[i];
-                    worstIdx = i;
-                }
-            }
-        }
-
-        if (selectedCount == 0) {
-            return 0;
-        }
-
-        // N is small (process rate), insertion sort keeps code simple.
-        for (int i = 1; i < selectedCount; i++) {
-            long key = selectedKeys[i];
-            long score = selectedScores[i];
-            int j = i - 1;
-            while (j >= 0 && selectedScores[j] > score) {
-                selectedScores[j + 1] = selectedScores[j];
-                selectedKeys[j + 1] = selectedKeys[j];
-                j--;
-            }
-            selectedScores[j + 1] = score;
-            selectedKeys[j + 1] = key;
-        }
-
-        int processed = 0;
-        for (int i = 0; i < selectedCount; i++) {
-            long pos = selectedKeys[i];
-            byte op = this.operations.remove(pos);
-            if (op == 0) {
-                continue;
-            }
-            if (op != 1 && op != -1) {
-                throw new IllegalStateException();
-            }
-            int x = (int) (pos & 0xFFFFFFFFL);
-            int z = (int) ((pos >>> 32) & 0xFFFFFFFFL);
-            if (op == 1) {
+            int x = (int) (pos&0xFFFFFFFFL);
+            int z = (int) ((pos>>>32)&0xFFFFFFFFL);
+            if (isAdd) {
                 onAdd.accept(x, z);
             } else {
                 onRemove.accept(x, z);
             }
-            processed++;
+            iter.remove();
         }
-        return processed;
-    }
-
-    public int pendingOperationCount() {
-        return this.operations.size();
+        return i;
     }
 
     private int[] generateBoundingHalfCircleDistance(int radius) {
