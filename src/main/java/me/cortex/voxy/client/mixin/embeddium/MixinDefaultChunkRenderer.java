@@ -50,7 +50,7 @@ public abstract class MixinDefaultChunkRenderer extends ShaderChunkRenderer {
                 // Skip during Iris shadow pass: Embeddium renders CUTOUT during shadow too,
                 // so without this guard setupViewport() would cache the shadow FBO id into
                 // cachedFramebufferId. The main render then submits LODs into the shadow FB → flashing.
-                // MixinShadowRenderer handles LOD shadow rendering separately via renderShadowPass().
+                // Shadow pass uses VoxyRenderSystem shadow-path logic when enabled.
                 if (me.cortex.voxy.client.compat.IrisCompatManager.isShadowActive()) {
                     return;
                 }

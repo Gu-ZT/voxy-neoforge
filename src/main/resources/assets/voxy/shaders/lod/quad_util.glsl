@@ -1,27 +1,14 @@
+#import <voxy:lod/pos_util.glsl>
 //Common utility functions for decoding and operating on quads
 
 vec3 swizzelDataAxis(uint axis, vec3 data) {
     return mix(mix(data.zxy,data.xzy,bvec3(axis==0)),data,bvec3(axis==1));
 }
 
-uint extractDetail(uvec2 encPos) {
-    return encPos.x>>28;
-}
-
-ivec3 extractLoDPosition(uvec2 encPos) {
-    int y = ((int(encPos.x)<<4)>>24);
-    int x = (int(encPos.y)<<4)>>8;
-    int z = int((encPos.x&((1u<<20)-1))<<4);
-    z |= int(encPos.y>>28);
-    z <<= 8;
-    z >>= 8;
-    return ivec3(x,y,z);
-}
-
 vec4 getFaceSize(uint faceData) {
-    vec4 faceOffsetsSizes = extractFaceSizes(faceData);
-
     float EPSILON = 0.00005f;
+
+    vec4 faceOffsetsSizes = extractFaceSizes(faceData);
 
     //Expand the quads by a very small amount (because of the subtraction after this also becomes an implicit add)
     faceOffsetsSizes.xz -= vec2(EPSILON);
@@ -128,9 +115,9 @@ uvec3 makeRemainingAttributes(const in BlockModel model, const in Quad quad, uin
 }
 
 void setupQuad(out QuadData quad, const in Quad rawQuad, uvec2 sPos, bool generateAttributes) {
-    uint lodLevel = extractDetail(sPos);
+    uint lodLevel = getLoDLevel(sPos);
     float lodScale = 1<<lodLevel;
-    ivec3 baseSection = (extractLoDPosition(sPos)<<lodLevel) - baseSectionPos;
+    ivec3 baseSection = (getLoDPosition(sPos)<<lodLevel) - baseSectionPos;
 
     uint face = extractFace(rawQuad);
     uint modelId = extractStateId(rawQuad);
@@ -165,7 +152,6 @@ void setupQuad(out QuadData quad, const in Quad rawQuad, uvec2 sPos, bool genera
 vec4 getQuadCornerPos(in QuadData quad, uint cornerId) {
     vec2 cornerMask = vec2((cornerId>>1)&1u, cornerId&1u)*quad.lodScale;
     vec3 point = quad.basePoint + swizzelDataAxis(quad.axis,vec3(quad.quadSizeAddin*cornerMask,0));
-
     vec4 pos = MVP * vec4(point, 1.0f);
     pos.xy += taaOffset*pos.w;
     return pos;

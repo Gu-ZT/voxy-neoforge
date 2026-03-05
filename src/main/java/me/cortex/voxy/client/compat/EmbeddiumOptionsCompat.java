@@ -6,6 +6,8 @@ import me.cortex.voxy.client.VoxyClientInstance;
 import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.config.VoxyNeoForgeConfig;
 import me.cortex.voxy.client.core.IGetVoxyRenderSystem;
+import me.cortex.voxy.client.core.VoxyRenderSystem;
+import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.commonImpl.VoxyCommon;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
@@ -117,14 +119,6 @@ public final class EmbeddiumOptionsCompat {
                         (cfg, value) -> cfg.setShaderPackFogOverride(value),
                         VoxyConfig::enableShaderPackFogOverride,
                         OptionImpact.LOW))
-                .add(booleanOption(
-                        "shader_pack_fallback_patch",
-                        "voxy.config.general.shader_pack_fallback_patch",
-                        "voxy.config.general.shader_pack_fallback_patch.tooltip",
-                        (cfg, value) -> cfg.setShaderPackFallbackPatch(value),
-                        VoxyConfig::enableShaderPackFallbackPatch,
-                        OptionImpact.LOW,
-                        OptionFlag.REQUIRES_RENDERER_RELOAD))
                 .add(intSliderOption(
                         "earth_curve_ratio",
                         "voxy.config.general.earth_curve_ratio",
@@ -195,6 +189,9 @@ public final class EmbeddiumOptionsCompat {
     }
 
     private static final class VoxyConfigStorage implements OptionStorage<VoxyConfig> {
+        private static boolean lastEnabled = VoxyConfig.CONFIG.isEnabled();
+        private static boolean lastRenderingEnabled = VoxyNeoForgeConfig.isRenderingEnabled();
+
         @Override
         public VoxyConfig getData() {
             return VoxyConfig.CONFIG;
@@ -203,6 +200,16 @@ public final class EmbeddiumOptionsCompat {
         @Override
         public void save() {
             VoxyConfig.CONFIG.save();
+
+            boolean enabled = VoxyConfig.CONFIG.isEnabled();
+            boolean renderingEnabled = VoxyNeoForgeConfig.isRenderingEnabled();
+            boolean rendererModeChanged = (enabled != lastEnabled) || (renderingEnabled != lastRenderingEnabled);
+
+            if (enabled && VoxyCommon.isAvailable() && VoxyCommon.getInstance() == null && VoxyClientInstance.isInGame) {
+                VoxyCommon.createInstance();
+            } else if (!enabled && VoxyCommon.getInstance() != null) {
+                VoxyCommon.shutdownInstance();
+            }
 
             var instance = (VoxyClientInstance) VoxyCommon.getInstance();
             if (instance != null) {
@@ -213,6 +220,18 @@ public final class EmbeddiumOptionsCompat {
             if (renderer != null) {
                 renderer.setRenderDistance(VoxyConfig.CONFIG.getSectionRenderDistance());
             }
+
+            if (rendererModeChanged) {
+                Logger.info("[VoxyConfig] Renderer mode changed: enabled " + lastEnabled + " -> " + enabled
+                        + ", rendering " + lastRenderingEnabled + " -> " + renderingEnabled);
+                if (IrisCompatManager.isShaderPackEnabled()) {
+                    IrisCompatManager.reloadShaders();
+                }
+                VoxyRenderSystem.scheduleRendererRecreate("config toggle enabled/rendering changed");
+            }
+
+            lastEnabled = enabled;
+            lastRenderingEnabled = renderingEnabled;
         }
     }
 }

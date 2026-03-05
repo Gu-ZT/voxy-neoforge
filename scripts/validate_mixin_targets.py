@@ -7,8 +7,9 @@ Validates @Inject, @Shadow, @Redirect targets against Minecraft source
 import os
 import re
 import sys
+import json
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Set
 
 # Color codes
 RED = '\033[0;31m'
@@ -43,7 +44,15 @@ class MixinValidator:
         match = re.search(pattern, content)
 
         if match:
-            return match.group(1)
+            target = match.group(1)
+            # Resolve simple names via imports so @Mixin(Level.class) maps to
+            # net.minecraft.world.level.Level instead of any random Level.java.
+            if '.' not in target:
+                import_pattern = rf'^\s*import\s+([A-Za-z0-9_.]+\.{re.escape(target)})\s*;'
+                import_match = re.search(import_pattern, content, re.MULTILINE)
+                if import_match:
+                    return import_match.group(1)
+            return target
         return None
 
     def extract_inject_targets(self, mixin_file: Path) -> List[Dict]:
@@ -59,6 +68,9 @@ class MixinValidator:
                 method_match = re.search(r'method\s*=\s*"([^"]+)"', line)
                 if method_match:
                     method_name = method_match.group(1)
+                    # Strip descriptor syntax when present, e.g. "allChanged()V" -> "allChanged".
+                    if method_name != "<init>" and "(" in method_name:
+                        method_name = method_name.split("(", 1)[0]
 
                     # Get the mixin method signature (next few lines)
                     mixin_method_lines = []
@@ -115,7 +127,7 @@ class MixinValidator:
 
         # Find constructor
         class_name = target_class.stem
-        constructor_pattern = rf'public\s+{class_name}\s*\('
+        constructor_pattern = rf'(?:public|protected|private)\s+{class_name}\s*\('
         constructor_match = re.search(constructor_pattern, content)
 
         if not constructor_match:
@@ -229,12 +241,17 @@ class MixinValidator:
         # Find all mixin files
         mixin_files = list(src_dir.rglob('*Mixin*.java'))
         mixin_files.extend(src_dir.rglob('*Accessor*.java'))
+        active_mixins = self._load_active_mixins()
 
         if not mixin_files:
             print(f"{YELLOW}No mixin files found{NC}")
             return 0
 
-        print(f"Found {len(mixin_files)} mixin files\n")
+        if active_mixins:
+            mixin_files = [f for f in mixin_files if self._get_declared_class_name(f) in active_mixins]
+            print(f"Found {len(mixin_files)} active mixin files (from mixin JSON)\n")
+        else:
+            print(f"Found {len(mixin_files)} mixin files\n")
 
         for mixin_file in sorted(mixin_files):
             self.validate_mixin_file(mixin_file)
@@ -260,6 +277,37 @@ class MixinValidator:
                 for warning in self.warnings:
                     print(f"  • {warning}")
             return 0
+
+    def _get_declared_class_name(self, mixin_file: Path) -> Optional[str]:
+        try:
+            with open(mixin_file, 'r') as f:
+                content = f.read()
+            pkg = re.search(r'^\s*package\s+([A-Za-z0-9_.]+)\s*;', content, re.MULTILINE)
+            if not pkg:
+                return None
+            return f"{pkg.group(1)}.{mixin_file.stem}"
+        except Exception:
+            return None
+
+    def _load_active_mixins(self) -> Set[str]:
+        active: Set[str] = set()
+        resources = Path('src/main/resources')
+        if not resources.exists():
+            return active
+        for cfg in resources.glob('*mixins.json'):
+            try:
+                data = json.loads(cfg.read_text())
+            except Exception:
+                continue
+            base_pkg = data.get('package')
+            if not base_pkg:
+                continue
+            for key in ('mixins', 'client', 'server', 'common'):
+                entries = data.get(key) or []
+                for entry in entries:
+                    if isinstance(entry, str):
+                        active.add(f"{base_pkg}.{entry}")
+        return active
 
 def main():
     mc_sources = Path('.reference/minecraft/1.21.1/decompiled')

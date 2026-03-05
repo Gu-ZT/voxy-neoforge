@@ -79,4 +79,16 @@ public final class IrisCompatManager {
         } catch (Throwable ignored) {
         }
     }
+
+    public static void reloadShaders() {
+        if (!IRIS_PRESENT) {
+            return;
+        }
+        try {
+            Class<?> clazz = Class.forName("me.cortex.voxy.client.compat.IrisCompat");
+            clazz.getMethod("reloadShaders").invoke(null);
+        } catch (Throwable t) {
+            Logger.warn("Failed to reload Iris shaders", t);
+        }
+    }
 }

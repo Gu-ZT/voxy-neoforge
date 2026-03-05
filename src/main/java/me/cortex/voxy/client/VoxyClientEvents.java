@@ -3,7 +3,6 @@ package me.cortex.voxy.client;
 import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.config.VoxyNeoForgeConfig;
 import me.cortex.voxy.client.compat.IrisCompatManager;
-import me.cortex.voxy.client.iris.IrisShaderPatch;
 import net.minecraft.client.renderer.FogRenderer;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -32,16 +31,11 @@ public class VoxyClientEvents {
      */
     @SubscribeEvent
     public static void onRenderFog(ViewportEvent.RenderFog event) {
-        boolean shaderPackEnabled = IrisCompatManager.isShaderPackEnabled();
-        if (shaderPackEnabled) {
-            if (!VoxyConfig.CONFIG.enableShaderPackFogOverride()) {
-                return;
-            }
-            // If the active shader patch has a DH-aware fog/deferred path, avoid forcing
-            // global fog to infinity. Packs like Complementary/Photon handle this internally.
-            if (!IrisShaderPatch.shouldApplyGlobalFogOverride()) {
-                return;
-            }
+        // Do not override fog while a shader pack is active.
+        // Shader packs manage fog/cloud composition internally; forcing far fog here
+        // can cause skybox/cloud artifacts during camera movement.
+        if (IrisCompatManager.isShaderPackEnabled()) {
+            return;
         }
         // Only modify terrain fog when Voxy is enabled and rendering
         if (event.getMode() == FogRenderer.FogMode.FOG_TERRAIN

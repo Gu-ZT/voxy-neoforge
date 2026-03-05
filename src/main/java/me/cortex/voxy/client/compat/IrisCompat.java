@@ -33,6 +33,10 @@ public final class IrisCompat {
         IrisUtil.disableIrisShaders();
     }
 
+    public static void reloadShaders() {
+        IrisUtil.reload();
+    }
+
     public static AbstractRenderPipeline createPipeline(AsyncNodeManager nodeManager,
                                                         NodeCleaner nodeCleaner,
                                                         HierarchicalOcclusionTraverser traversal,

@@ -4,7 +4,6 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import me.cortex.voxy.client.compat.IrisCompatManager;
 import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.IGetVoxyRenderSystem;
-import me.cortex.voxy.client.iris.IrisShaderPatch;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.FogRenderer;
@@ -27,7 +26,8 @@ public class MixinFogRenderer {
         var vrs = ((IGetVoxyRenderSystem) mc.levelRenderer).getVoxyRenderSystem();
         if (vrs == null) return;
 
-        if (IrisCompatManager.isShaderPackEnabled() && !IrisShaderPatch.shouldApplyGlobalFogOverride()) {
+        // Keep shader-pack fog/cloud pipeline authoritative.
+        if (IrisCompatManager.isShaderPackEnabled()) {
             return;
         }
 
@@ -36,11 +36,9 @@ public class MixinFogRenderer {
             RenderSystem.setShaderFogEnd(999999999f);
         }
 
-        if (!VoxyConfig.CONFIG.useEnvironmentalFog()) {
-            if (fogMode == FogRenderer.FogMode.FOG_SKY) {
-                RenderSystem.setShaderFogStart(999999999f);
-                RenderSystem.setShaderFogEnd(999999999f);
-            }
+        if (!VoxyConfig.CONFIG.useEnvironmentalFog() && fogMode == FogRenderer.FogMode.FOG_SKY) {
+            RenderSystem.setShaderFogStart(999999999f);
+            RenderSystem.setShaderFogEnd(999999999f);
         }
     }
 }

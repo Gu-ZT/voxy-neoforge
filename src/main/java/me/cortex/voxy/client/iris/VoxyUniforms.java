@@ -2,8 +2,6 @@ package me.cortex.voxy.client.iris;
 
 import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.IGetVoxyRenderSystem;
-import me.cortex.voxy.client.core.VoxyRenderSystem;
-import me.cortex.voxy.client.core.rendering.Viewport;
 import net.irisshaders.iris.gl.uniform.UniformHolder;
 import net.minecraft.client.Minecraft;
 import org.joml.Matrix4f;
@@ -14,40 +12,48 @@ import java.util.function.Supplier;
 import static net.irisshaders.iris.gl.uniform.UniformUpdateFrequency.PER_FRAME;
 
 public class VoxyUniforms {
-    private static Viewport<?> getViewportOrNull() {
+    private static IGetVoxyRenderSystem getRendererAccessor() {
         var levelRenderer = Minecraft.getInstance().levelRenderer;
-        if (!(levelRenderer instanceof IGetVoxyRenderSystem getVrs)) {
-            return null;
-        }
-        VoxyRenderSystem vrs = getVrs.getVoxyRenderSystem();
-        if (vrs == null) {
-            return null;
-        }
-        return vrs.getViewportForUniforms();
+        return levelRenderer instanceof IGetVoxyRenderSystem getVrs ? getVrs : null;
     }
 
+    // Keep parity with upstream behavior: use getViewport(), which returns null during Iris
+    // shadow passes. This avoids feeding shadow matrices into temporal history uniforms.
     public static Matrix4f getViewProjection() {
-        var viewport = getViewportOrNull();
-        if (viewport == null || viewport.MVP == null) {
+        var getVrs = getRendererAccessor();
+        if (getVrs == null || getVrs.getVoxyRenderSystem() == null) {
             return new Matrix4f();
         }
+        var viewport = getVrs.getVoxyRenderSystem().getViewport();
+        if (viewport == null || viewport.MVP == null) return new Matrix4f();
         return new Matrix4f(viewport.MVP);
     }
 
     public static Matrix4f getModelView() {
-        var viewport = getViewportOrNull();
-        if (viewport == null || viewport.modelView == null) {
+        var getVrs = getRendererAccessor();
+        if (getVrs == null || getVrs.getVoxyRenderSystem() == null) {
             return new Matrix4f();
         }
+        var viewport = getVrs.getVoxyRenderSystem().getViewport();
+        if (viewport == null || viewport.modelView == null) return new Matrix4f();
         return new Matrix4f(viewport.modelView);
     }
 
     public static Matrix4f getProjection() {
-        var viewport = getViewportOrNull();
-        if (viewport == null || viewport.projection == null) {
+        var getVrs = getRendererAccessor();
+        if (getVrs == null || getVrs.getVoxyRenderSystem() == null) {
             return new Matrix4f();
         }
+        var viewport = getVrs.getVoxyRenderSystem().getViewport();
+        if (viewport == null || viewport.projection == null) return new Matrix4f();
         return new Matrix4f(viewport.projection);
+    }
+
+    private static int getViewportFrameId() {
+        var getVrs = getRendererAccessor();
+        if (getVrs == null || getVrs.getVoxyRenderSystem() == null) return -1;
+        var viewport = getVrs.getVoxyRenderSystem().getViewport();
+        return viewport == null ? -1 : viewport.frameId;
     }
 
     public static void addUniforms(UniformHolder uniforms) {
@@ -86,6 +92,7 @@ public class VoxyUniforms {
     private static class PreviousMat implements Supplier<Matrix4fc> {
         private final Supplier<Matrix4fc> parent;
         private Matrix4f previous;
+        private int lastFrameId = Integer.MIN_VALUE;
 
         PreviousMat(Supplier<Matrix4fc> parent) {
             this.parent = parent;
@@ -94,7 +101,11 @@ public class VoxyUniforms {
 
         public Matrix4fc get() {
             Matrix4f previous = this.previous;
-            this.previous = new Matrix4f(this.parent.get());
+            int frameId = getViewportFrameId();
+            if (frameId != this.lastFrameId) {
+                this.previous = new Matrix4f(this.parent.get());
+                this.lastFrameId = frameId;
+            }
             return previous;
         }
     }

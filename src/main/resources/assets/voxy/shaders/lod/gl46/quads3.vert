@@ -20,10 +20,6 @@ layout(location = 0) out flat uvec4 interData;
 #ifndef USE_NV_BARRY
 layout(location = 1) out vec2 uv;
 #endif
-// View-space position and world-space normal emitted for shader-pack lighting in PATCHED_SHADER mode.
-// Non-patched path doesn't use these but declaring them here is harmless (unused varyings are optimised out).
-layout(location = 5) out vec3 vViewPos;
-layout(location = 6) out flat vec3 vWorldNormal;
 
 #ifdef DEBUG_RENDER
 layout(location = 7) out flat uint quadDebug;
@@ -38,7 +34,8 @@ void main() {
     taaOffset = taaShift();
 
     QuadData quad;
-    setupQuad(quad, quadData[uint(gl_VertexID)>>2], positionBuffer[gl_BaseInstance], (gl_VertexID&3) == 1);
+    uvec2 pos = positionBuffer[gl_BaseInstance];
+    setupQuad(quad, quadData[uint(gl_VertexID)>>2], pos, (gl_VertexID&3) == 1);
 
     uint cornerId = gl_VertexID&3;
     gl_Position = getQuadCornerPos(quad, cornerId);
@@ -50,23 +47,10 @@ void main() {
     //Note: other data is automatically discarded as it is undefiend and has not been generated
     interData = quad.attributeData;
 
-    // Emit view-space position for shader-pack lighting. MVP = projection * modelView,
-    // so extract the view-space pos by multiplying world pos by modelView only.
-    // We reconstruct modelView as MVP * inverse(projection) — but that's expensive.
-    // Instead, emit world-space pos as vViewPos and let the patch convert using iris_ModelViewMatrix.
-    // This is close enough for directional lighting; packs can normalize it themselves.
-    vec3 worldPos = quad.basePoint;  // world-relative (camera at origin) position of vertex
-    vViewPos = worldPos;
-
-    // World-space normal from face direction (face encoding: axis = face>>1, sign = face&1)
-    uint face = (interData.x >> 4) & 7u;
-    uint axis = face >> 1u;
-    float sign = float(int(face & 1u)) * 2.0 - 1.0;
-    vWorldNormal = vec3(float(axis == 2u), float(axis == 0u), float(axis == 1u)) * sign;
-
 
     #ifdef DEBUG_RENDER
-    quadDebug = uint(gl_VertexID)>>(2+5);
+    //quadDebug = uint(extractDetail(pos));
+    quadDebug = uint(gl_VertexID)>>2;
     #endif
 }
 

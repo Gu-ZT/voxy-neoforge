@@ -31,26 +31,9 @@ public abstract class MixinLevelRenderer implements IGetVoxyRenderSystem {
 
     @Inject(method = "allChanged()V", at = @At("RETURN"), order = 900)//We want to inject before embeddium
     private void reloadVoxyRenderer(CallbackInfo ci) {
-        // allChanged() fires on every resource/plugin reload (EMI, shader toggle, etc), not only
-        // true world transitions. Full teardown+recreate here would rebuild ModelFactory and
-        // reassign block→modelId mappings, invalidating all GPU geometry already uploaded with
-        // the old IDs → scrambled textures on any geometry that hasn't been re-meshed yet.
-        //
-        // If a renderer already exists: keep it, just refresh mutable runtime parameters.
-        // If no renderer yet (null level → world join): create fresh.
-        if (this.level == null) {
-            this.shutdownRenderer();
-            return;
-        }
-        if (this.renderer == null) {
+        this.shutdownRenderer();
+        if (this.level != null) {
             this.createRenderer();
-            return;
-        }
-        // Keep existing renderer — only refresh mutable runtime parameters.
-        this.renderer.setRenderDistance(VoxyConfig.CONFIG.getSectionRenderDistance());
-        var instance = (VoxyClientInstance) VoxyCommon.getInstance();
-        if (instance != null) {
-            instance.updateDedicatedThreads();
         }
     }
 

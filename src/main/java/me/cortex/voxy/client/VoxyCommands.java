@@ -5,6 +5,7 @@ import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.suggestion.Suggestions;
 import com.mojang.brigadier.suggestion.SuggestionsBuilder;
+import me.cortex.voxy.client.compat.IrisCompatManager;
 import me.cortex.voxy.client.core.IGetVoxyRenderSystem;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.commonImpl.VoxyCommon;
@@ -80,6 +81,10 @@ public class VoxyCommands {
         VoxyCommon.shutdownInstance();
         System.gc();
         VoxyCommon.createInstance();
+
+        if (IrisCompatManager.isShaderPackEnabled()) {
+            IrisCompatManager.reloadShaders();
+        }
 
         var r = Minecraft.getInstance().levelRenderer;
         if (r != null) r.allChanged();

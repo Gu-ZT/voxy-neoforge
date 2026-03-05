@@ -990,29 +990,6 @@ public class ModelFactory {
         return this.idMappings[blockId] != -1;
     }
 
-    /**
-     * Register a permanently-failing block ID as air (model 0).
-     * Called by RenderGenerationService after too many failed bake attempts.
-     * Idempotent — safe to call multiple times for the same ID.
-     *
-     * NOTE: We intentionally do NOT remove the block from blockStatesInFlight.
-     * If the GPU bakery eventually finishes baking the block, processTextureBakeResult
-     * will overwrite idMappings[blockId] with the real model, replacing the air fallback.
-     * This is preferable: the block transitions from "air" to "correct model" transparently.
-     */
-    public void registerAirFallback(int blockId) {
-        if (this.idMappings[blockId] == -1) {
-            this.idMappings[blockId] = 0; // 0 = air model
-            // Log the block state name for debugging
-            try {
-                var blockState = this.mapper.getBlockStateFromBlockId(blockId);
-                Logger.warn("[ModelFactory] Block ID " + blockId + " (" + blockState + ") is taking too long to bake — temporarily rendering as air in LODs");
-            } catch (Exception ex) {
-                Logger.warn("[ModelFactory] Block ID " + blockId + " is taking too long to bake — temporarily rendering as air in LODs (state lookup failed: " + ex.getMessage() + ")");
-            }
-        }
-    }
-
     public int getFluidClientStateId(int clientBlockStateId) {
         int map = this.fluidStateLUT[clientBlockStateId];
         if (map == -1) {

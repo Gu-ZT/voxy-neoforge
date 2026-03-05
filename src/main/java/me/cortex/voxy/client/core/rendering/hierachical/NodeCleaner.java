@@ -5,9 +5,11 @@ import me.cortex.voxy.client.core.gl.GlBuffer;
 import me.cortex.voxy.client.core.gl.shader.AutoBindingShader;
 import me.cortex.voxy.client.core.gl.shader.Shader;
 import me.cortex.voxy.client.core.gl.shader.ShaderType;
+import me.cortex.voxy.client.core.rendering.Viewport;
 import me.cortex.voxy.client.core.rendering.util.DownloadStream;
 import me.cortex.voxy.client.core.rendering.util.PrintfDebugUtil;
 import me.cortex.voxy.client.core.rendering.util.UploadStream;
+import me.cortex.voxy.common.Logger;
 import org.lwjgl.opengl.ARBDirectStateAccess;
 import org.lwjgl.system.MemoryUtil;
 
@@ -63,6 +65,27 @@ public class NodeCleaner {
     private final AsyncNodeManager nodeManager;
     int visibilityId = 0;
 
+    private static final boolean ENABLE_GEOMETRY_CLEANER =
+            System.getProperty("voxy.nodeCleanerEnabled", "false").equalsIgnoreCase("true");
+    private static final boolean ENABLE_MOTION_GUARD =
+            System.getProperty("voxy.nodeCleanerMotionGuard", "true").equalsIgnoreCase("true");
+    private static final double MOTION_GUARD_BLOCKS_PER_FRAME =
+            Double.parseDouble(System.getProperty("voxy.nodeCleanerMotionThreshold", "2.0"));
+    private static final double ROTATION_GUARD_DEGREES_PER_FRAME =
+            Double.parseDouble(System.getProperty("voxy.nodeCleanerRotationThresholdDegrees", "1.5"));
+    private static final int MOTION_GUARD_FRAMES =
+            Integer.parseInt(System.getProperty("voxy.nodeCleanerMotionGuardFrames", "8"));
+    private static final int CLEAN_INTERVAL_FRAMES =
+            Integer.parseInt(System.getProperty("voxy.nodeCleanerInterval", "1"));
+    private static final long CLEAN_REMAINING_GEOMETRY_THRESHOLD_BYTES =
+            Long.parseLong(System.getProperty("voxy.nodeCleanerMinRemainingBytes", "100000000"));
+
+    private int frameCounter = 0;
+    private int deferCleanFrames = 0;
+    private double lastCamX = Double.NaN, lastCamY = Double.NaN, lastCamZ = Double.NaN;
+    private float lastNearPlaneX = Float.NaN, lastNearPlaneY = Float.NaN, lastNearPlaneZ = Float.NaN;
+    private int motionSkipLogCooldown = 0;
+
 
     public NodeCleaner(AsyncNodeManager nodeManager) {
         this.nodeManager = nodeManager;
@@ -100,8 +123,60 @@ public class NodeCleaner {
     }
 
 
-    public void tick(GlBuffer nodeDataBuffer) {
+    public void tick(GlBuffer nodeDataBuffer, Viewport<?> viewport) {
         this.visibilityId++;
+        this.frameCounter++;
+
+        if (!ENABLE_GEOMETRY_CLEANER) {
+            return;
+        }
+
+        if (ENABLE_MOTION_GUARD && viewport != null) {
+            double motion = 0.0;
+            double rotationDegrees = 0.0;
+            if (!Double.isNaN(this.lastCamX)) {
+                double dx = viewport.cameraX - this.lastCamX;
+                double dy = viewport.cameraY - this.lastCamY;
+                double dz = viewport.cameraZ - this.lastCamZ;
+                motion = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            }
+
+            if (!Float.isNaN(this.lastNearPlaneX)) {
+                float nearPlaneX = viewport.frustumPlanes[4].x;
+                float nearPlaneY = viewport.frustumPlanes[4].y;
+                float nearPlaneZ = viewport.frustumPlanes[4].z;
+                double dot = nearPlaneX * this.lastNearPlaneX
+                        + nearPlaneY * this.lastNearPlaneY
+                        + nearPlaneZ * this.lastNearPlaneZ;
+                dot = Math.max(-1.0, Math.min(1.0, dot));
+                rotationDegrees = Math.toDegrees(Math.acos(dot));
+            }
+
+            if (motion >= MOTION_GUARD_BLOCKS_PER_FRAME || rotationDegrees >= ROTATION_GUARD_DEGREES_PER_FRAME) {
+                this.deferCleanFrames = Math.max(this.deferCleanFrames, MOTION_GUARD_FRAMES);
+                if (this.motionSkipLogCooldown-- <= 0) {
+                    this.motionSkipLogCooldown = 120;
+                    Logger.info("[NodeCleaner] Motion guard active; motion=" + motion + ", rotation=" + rotationDegrees +
+                            ", deferFrames=" + this.deferCleanFrames);
+                }
+            }
+            this.lastCamX = viewport.cameraX;
+            this.lastCamY = viewport.cameraY;
+            this.lastCamZ = viewport.cameraZ;
+            this.lastNearPlaneX = viewport.frustumPlanes[4].x;
+            this.lastNearPlaneY = viewport.frustumPlanes[4].y;
+            this.lastNearPlaneZ = viewport.frustumPlanes[4].z;
+        }
+
+        if (this.deferCleanFrames > 0) {
+            this.deferCleanFrames--;
+            return;
+        }
+
+        if ((this.frameCounter % Math.max(1, CLEAN_INTERVAL_FRAMES)) != 0) {
+            return;
+        }
+
         if (this.shouldCleanGeometry()) {
             this.outputBuffer.fill(this.nodeManager.maxNodeCount - 2);//TODO: maybe dont set to zero??
 
@@ -138,7 +213,7 @@ public class NodeCleaner {
             return 3 < ((double) used) / ((double) (this.nodeManager.getGeometryCapacity() - used));
         } else {
             long remaining = this.nodeManager.getGeometryCapacity() - this.nodeManager.getUsedGeometryCapacity();
-            return remaining < 256_000_000;//If less than 256 mb free memory
+            return remaining < CLEAN_REMAINING_GEOMETRY_THRESHOLD_BYTES;
         }
     }
 

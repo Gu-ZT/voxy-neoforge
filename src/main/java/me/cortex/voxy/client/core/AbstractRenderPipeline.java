@@ -219,7 +219,7 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
             this.nodeManager.tick(this.traversal.getNodeBuffer(), this.nodeCleaner);
             //glFlush();
 
-            this.nodeCleaner.tick(this.traversal.getNodeBuffer());//Probably do this here??
+            this.nodeCleaner.tick(this.traversal.getNodeBuffer(), viewport);//Probably do this here??
 
             TimingStatistics.dynamic.stop();
             TimingStatistics.main.start();

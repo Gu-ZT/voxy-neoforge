@@ -2,7 +2,6 @@ package me.cortex.voxy.client.core.rendering.building;
 
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
-import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.client.core.model.IdNotYetComputedException;
 import me.cortex.voxy.client.core.model.ModelBakerySubsystem;
 import me.cortex.voxy.common.thread.Service;
@@ -25,11 +24,12 @@ import java.util.function.Consumer;
 // and process accordingly
 public class RenderGenerationService {
     private static final int MAX_HOLDING_SECTION_COUNT = 1000;
-    /** After this many failed attempts, permanently-failing block IDs are mapped to air. */
-    private static final int MAX_BAKE_ATTEMPTS = 300;
+    private static final long RETRY_WINDOW_NANOS = 100_000_000L; // 100ms
+    private static final int RETRY_PRESSURE_LIMIT = 500;
 
-    public static final AtomicInteger MESH_FAILED_COUNTER = new AtomicInteger();
-    public static final AtomicInteger MESH_COMPLETED_COUNTER = new AtomicInteger();
+    public static final AtomicInteger MESH_RETRY_COUNTER = new AtomicInteger();
+    // Backward-compat alias for existing debug callers.
+    public static final AtomicInteger MESH_FAILED_COUNTER = MESH_RETRY_COUNTER;
     private static final AtomicInteger COUNTER = new AtomicInteger();
     private static final class BuildTask {
         WorldSection section;
@@ -64,6 +64,7 @@ public class RenderGenerationService {
     private final boolean emitMeshlets;
 
     private final Service service;
+    private volatile long retryWindowStartNanos = System.nanoTime();
 
 
     /*
@@ -83,12 +84,20 @@ public class RenderGenerationService {
             return new Pair<>(() -> {
                 this.processJob(factory, seenMissed);
             }, factory::free);
-        // Limiter: only allow mesh threads to run when the model bakery is not overwhelmed
-        // OR when the failure rate is low. This prevents 10 threads from spinning in tight
-        // retry loops when hundreds of block IDs are queued for baking — the dominant source
-        // of CPU spikes during world load and camera movement into unloaded areas.
-        // Thresholds: bakery queue < 400 items, OR failures < 500 per 100ms window.
-        }, 10, "Section mesh generation service", ()->modelBakery.getProcessingCount()<400||RenderGenerationService.MESH_FAILED_COUNTER.get()<500);
+        }, 10, "Section mesh generation service", ()->{
+            int modelBakeQueueCount = modelBakery.getProcessingCount();
+            if (modelBakeQueueCount>1000) return false;//Pause mesh gen if there is alot of model baking happening
+            this.rollRetryWindowIfNeeded();
+            return modelBakery.getProcessingCount()<400||RenderGenerationService.MESH_RETRY_COUNTER.get()<RETRY_PRESSURE_LIMIT;
+        });
+    }
+
+    private void rollRetryWindowIfNeeded() {
+        long now = System.nanoTime();
+        if ((now - this.retryWindowStartNanos) > RETRY_WINDOW_NANOS) {
+            MESH_RETRY_COUNTER.set(0);
+            this.retryWindowStartNanos = now;
+        }
     }
 
     public void setResultConsumer(Consumer<BuiltSection> consumer) {
@@ -218,16 +227,14 @@ public class RenderGenerationService {
                 }
 
                 if (task.hasDoneModelRequestOuter || task.hasDoneModelRequestInner) {
-                    MESH_FAILED_COUNTER.incrementAndGet();
+                    MESH_RETRY_COUNTER.incrementAndGet();
                 }
 
                 if (task.hasDoneModelRequestInner && task.hasDoneModelRequestOuter) {
                     task.attempts++;
+                    int retryBackoffMs = 1 << Math.min(task.attempts, 4); // 1,2,4,8,16
                     try {
-                        // Both model scan passes done but baking still in progress.
-                        // Sleep scales with attempts: 1ms, 2ms, 4ms … capped at 16ms.
-                        // This prevents 10 threads from burning CPU waiting on the GPU bakery.
-                        Thread.sleep(Math.min(1 << Math.min(task.attempts - 1, 4), 16));
+                        Thread.sleep(retryBackoffMs);
                     } catch (InterruptedException ex) {
                         throw new RuntimeException(ex);
                     }
@@ -253,27 +260,6 @@ public class RenderGenerationService {
                     }
 
                     task.addin = WorldEngine.getLevel(task.position)>2?1:0;//Single time addin which gives the models time to bake before the task executes
-
-                    // After model scan requests are submitted, yield briefly so the bakery
-                    // thread pool can make progress before this section is retried.
-                    // Without this, threads spin-retry immediately at ~100µs/loop.
-                    try {
-                        Thread.sleep(1);
-                    } catch (InterruptedException ex) {
-                        throw new RuntimeException(ex);
-                    }
-                }
-
-                // Give-up path: if this block ID has failed to bake after MAX_BAKE_ATTEMPTS,
-                // register it as air so it stops blocking mesh generation for this section.
-                // This handles modded blocks whose textures/models fail to load at runtime.
-                if (task.attempts >= MAX_BAKE_ATTEMPTS && e.isIdBlockId) {
-                    if (!this.modelBakery.factory.hasModelForBlockId(e.id)) {
-                        Logger.warn("[RenderGenerationService] Block ID " + e.id + " failed to bake after " + task.attempts + " attempts — registering as air fallback");
-                        this.modelBakery.factory.registerAirFallback(e.id);
-                        // Reset attempt counter so the section can proceed immediately
-                        task.attempts = 0;
-                    }
                 }
 
                 //Keep the lock on the section, and attach it to the task, this prevents needing to re-aquire it later
@@ -305,7 +291,6 @@ public class RenderGenerationService {
         }
 
         if (mesh != null) {//If the mesh is null it means it didnt finish, so dont submit
-            MESH_COMPLETED_COUNTER.incrementAndGet();
             if (this.resultConsumer != null) {
                 this.resultConsumer.accept(mesh);
             } else {
@@ -313,7 +298,6 @@ public class RenderGenerationService {
             }
         }
     }
-
 
     public void enqueueTask(long pos) {
         if (!this.service.isLive()) {
@@ -387,16 +371,9 @@ public class RenderGenerationService {
         }
     }
 
-    private long lastChangedTime = 0;
     public void addDebugData(List<String> debug) {
-        if (System.currentTimeMillis()-this.lastChangedTime > 100) {
-            MESH_FAILED_COUNTER.set(0);
-            MESH_COMPLETED_COUNTER.set(0);
-            this.lastChangedTime = System.currentTimeMillis();
-        }
-        // RSSQ = render section service queue depth
-        // OK/FAIL = meshes completed vs failed (per 100ms window)
-        debug.add("RSSQ: " + this.taskQueueCount.get() + " OK/FAIL: " + MESH_COMPLETED_COUNTER.get() + "/" + MESH_FAILED_COUNTER.get());
+        this.rollRetryWindowIfNeeded();
+        debug.add("RSSQ/TRC: " + this.taskQueueCount.get() + "/" + MESH_RETRY_COUNTER.get());//render section service queue, Task Retry Counter
 
     }
 

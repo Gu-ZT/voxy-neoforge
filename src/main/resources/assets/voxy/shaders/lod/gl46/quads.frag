@@ -12,10 +12,6 @@
 layout(binding = 0) uniform sampler2D blockModelAtlas;
 layout(binding = 2) uniform sampler2D depthTex;
 
-// The vertex shader binds Minecraft's LightTexture at texture unit 1 via LightMapHelper.bind(1).
-// Expose it to the fragment shader as well so Iris fallback patches can do correct light sampling.
-#define LIGHTING_SAMPLER_BINDING 1
-
 //#define DEBUG_RENDER
 
 //TODO: need to fix when merged quads have discardAlpha set to false but they span multiple tiles
@@ -25,9 +21,6 @@ layout(location = 0) in flat uvec4 interData;
 #ifndef USE_NV_BARRY
 layout(location = 1) in vec2 uv;
 #endif
-// Varyings emitted by quads3.vert for shader-pack directional lighting (unused in non-patched path).
-layout(location = 5) in vec3 vViewPos;
-layout(location = 6) in flat vec3 vWorldNormal;
 
 #ifdef DEBUG_RENDER
 layout(location = 7) in flat uint quadDebug;
@@ -106,11 +99,8 @@ vec4 computeColour(vec2 texturePos, vec4 colour) {
     uint tintingFunction = tintingState();
     bool doTint = tintingFunction==2;//Always tint if function == 2
     if (tintingFunction == 1) {//partial tint
-        // Use the already-computed mip-biased colour sample for tint detection instead of LOD-0.
-        // Previously textureLod(..., 0) sampled full-res texture while the final colour used a
-        // high mip — the grayscale test result flickered as the two samples disagreed at LOD
-        // boundaries, causing grass shimmer. Using the biased 'colour' is consistent and stable.
-        if (abs(colour.r-colour.g) < 0.02f && abs(colour.g-colour.b) < 0.02f) {
+        vec4 tintTest = textureLod(blockModelAtlas, texturePos, 0);
+        if (abs(tintTest.r-tintTest.g) < 0.02f && abs(tintTest.g-tintTest.b) < 0.02f) {
             doTint = true;
         }
     }
@@ -214,8 +204,8 @@ void main() {
     uint tintingFunction = tintingState();
     bool doTint = tintingFunction==2;//Always tint if function == 2
     if (tintingFunction==1) {//Partial tint
-        // Use the biased colour sample for consistency; avoids flicker from LOD-0 vs biased mismatch.
-        if (abs(colour.r-colour.g) < 0.02f && abs(colour.g-colour.b) < 0.02f) {
+        vec4 tintTest = texture(blockModelAtlas, texPos, -2);
+        if (abs(tintTest.r-tintTest.g) < 0.02f && abs(tintTest.g-tintTest.b) < 0.02f) {
             doTint = true;
         }
     }
@@ -256,3 +246,4 @@ colour = textureGrad(blockModelAtlas, texPos, dx, dy);
 //#else
 //colour = texture(blockModelAtlas, texPos);
 //#endif
+

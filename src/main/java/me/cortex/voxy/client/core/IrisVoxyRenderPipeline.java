@@ -26,6 +26,8 @@ import static org.lwjgl.opengl.GL45C.*;
 public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
     private static final boolean ENABLE_IRIS_TEMPORAL_PASS =
             System.getProperty("voxy.irisTemporalPass", "false").equalsIgnoreCase("true");
+    private static final boolean ENABLE_GLSL_COMPAT_FIXES =
+            System.getProperty("voxy.irisGlslCompatFixes", "false").equalsIgnoreCase("true");
 
     final IrisVoxyRenderPipelineData data;
     final FullscreenBlit depthBlit = new FullscreenBlit("voxy:post/blit_texture_depth_cutout.frag");
@@ -213,9 +215,9 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
         } catch (IllegalStateException e) {
             if (e.getMessage() != null && e.getMessage().contains("destroyed RenderTargets")) {
                 // Iris destroyed its RenderTargets during a pipeline rebuild while Voxy was mid-render.
-                // This is a transient condition; VoxyRenderSystem recreation is already scheduled by
-                // MixinIrisRenderingPipeline.voxy$resetCompatibilityState via mc.execute().
+                // Schedule a deferred renderer recreate so Voxy can bind against the new Iris pipeline data.
                 me.cortex.voxy.common.Logger.warn("[IrisVoxyRenderPipeline] Iris RenderTargets destroyed mid-render — skipping frame");
+                VoxyRenderSystem.scheduleRendererRecreate("destroyed RenderTargets during bind");
                 return false;
             }
             throw e;
@@ -242,7 +244,7 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
     public void addDebug(List<String> debug) {
         debug.add("Using: " + this.getClass().getSimpleName());
         debug.add("Iris temporal pass: " + (ENABLE_IRIS_TEMPORAL_PASS ? "enabled" : "disabled"));
-        debug.add("Shader compat mode: " + this.data.compatibilityMode);
+        debug.add("Iris GLSL compat fixes: " + (ENABLE_GLSL_COMPAT_FIXES ? "enabled" : "disabled"));
         super.addDebug(debug);
     }
 
@@ -286,6 +288,7 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
      */
     private static String applyGlslCompatFixes(String source) {
         if (source == null) return null;
+        if (!ENABLE_GLSL_COMPAT_FIXES) return source;
         // shadow2D() was removed in GLSL 1.40; replace with texture() which is the modern equivalent.
         // This handles packs like BSL whose included lighting libs still use the deprecated form.
         source = source.replace("shadow2D(", "texture(");
@@ -295,6 +298,7 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
 
     private boolean opaquePatchLogged = false;
     private boolean translucentPatchLogged = false;
+    private boolean glslCompatLogPrinted = false;
 
     @Override
     public String patchOpaqueShader(AbstractSectionRenderer<?, ?> renderer, String input) {
@@ -309,6 +313,10 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
         builder.append(opaquePatch);
 
         String result = applyGlslCompatFixes(builder.toString());
+        if (ENABLE_GLSL_COMPAT_FIXES && !this.glslCompatLogPrinted) {
+            this.glslCompatLogPrinted = true;
+            me.cortex.voxy.common.Logger.warn("[IrisVoxyRenderPipeline] GLSL compatibility rewrites enabled via -Dvoxy.irisGlslCompatFixes=true (shadow2D/shadow2DLod replacement)");
+        }
         if (!this.opaquePatchLogged) {
             this.opaquePatchLogged = true;
             String snippet = result != null && result.length() > 3000 ? result.substring(0, 3000) + "\n...[truncated, total len=" + result.length() + "]" : result;

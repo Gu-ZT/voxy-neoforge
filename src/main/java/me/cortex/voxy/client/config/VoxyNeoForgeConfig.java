@@ -28,7 +28,6 @@ public class VoxyNeoForgeConfig {
     private static final double DEFAULT_SUB_DIVISION_SIZE = 64.0;
     private static final boolean DEFAULT_USE_ENVIRONMENTAL_FOG = true;
     private static final boolean DEFAULT_SHADER_PACK_FOG_OVERRIDE = true;
-    private static final boolean DEFAULT_SHADER_PACK_FALLBACK_PATCH = true;
     private static final boolean DEFAULT_DONT_USE_EMBEDDIUM_BUILDER_THREADS = false;
     private static final int DEFAULT_EARTH_CURVE_RATIO = 0;
     private static final boolean DEFAULT_RENDER_STATISTICS = false;
@@ -73,11 +72,6 @@ public class VoxyNeoForgeConfig {
             .comment("Extend fog distance when shader packs are active",
                      "Prevents distant LODs from being fully fogged out by shader packs")
             .define("shaderPackFogOverride", DEFAULT_SHADER_PACK_FOG_OVERRIDE);
-
-    static final ModConfigSpec.BooleanValue SHADER_PACK_FALLBACK_PATCH = BUILDER
-            .comment("Enable fallback shader patching for packs without voxy.json",
-                     "Keeps LODs visible in shader packs that lack native Voxy integration")
-            .define("shaderPackFallbackPatch", DEFAULT_SHADER_PACK_FALLBACK_PATCH);
 
     // Advanced settings
     static final ModConfigSpec.BooleanValue DONT_USE_EMBEDDIUM_BUILDER_THREADS = BUILDER
@@ -229,15 +223,6 @@ public class VoxyNeoForgeConfig {
         }
     }
 
-    public static boolean enableShaderPackFallbackPatch() {
-        if (!configLoaded) return DEFAULT_SHADER_PACK_FALLBACK_PATCH;
-        try {
-            return SHADER_PACK_FALLBACK_PATCH.get();
-        } catch (IllegalStateException ignored) {
-            return DEFAULT_SHADER_PACK_FALLBACK_PATCH;
-        }
-    }
-
     public static boolean dontUseEmbeddiumBuilderThreads() {
         if (!configLoaded) return DEFAULT_DONT_USE_EMBEDDIUM_BUILDER_THREADS;
         try {
@@ -297,10 +282,6 @@ public class VoxyNeoForgeConfig {
 
     public static void setShaderPackFogOverride(boolean value) {
         SHADER_PACK_FOG_OVERRIDE.set(value);
-    }
-
-    public static void setShaderPackFallbackPatch(boolean value) {
-        SHADER_PACK_FALLBACK_PATCH.set(value);
     }
 
     public static void setDontUseEmbeddiumBuilderThreads(boolean value) {

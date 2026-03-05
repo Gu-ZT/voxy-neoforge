@@ -52,10 +52,6 @@ public class VoxyConfig {
         return VoxyNeoForgeConfig.enableShaderPackFogOverride();
     }
 
-    public boolean enableShaderPackFallbackPatch() {
-        return VoxyNeoForgeConfig.enableShaderPackFallbackPatch();
-    }
-
     public boolean dontUseEmbeddiumBuilderThreads() {
         return VoxyNeoForgeConfig.dontUseEmbeddiumBuilderThreads();
     }
@@ -96,10 +92,6 @@ public class VoxyConfig {
 
     public void setShaderPackFogOverride(boolean value) {
         VoxyNeoForgeConfig.setShaderPackFogOverride(value);
-    }
-
-    public void setShaderPackFallbackPatch(boolean value) {
-        VoxyNeoForgeConfig.setShaderPackFallbackPatch(value);
     }
 
     public void setDontUseEmbeddiumBuilderThreads(boolean value) {

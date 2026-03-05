@@ -31,9 +31,6 @@
   "voxy.config.general.shader_pack_fog_override": "Extend shader pack fog",
   "voxy.config.general.shader_pack_fog_override.tooltip": "Prevents shader pack fog from hiding distant LODs",
 
-  "voxy.config.general.shader_pack_fallback_patch": "Shader pack fallback patch",
-  "voxy.config.general.shader_pack_fallback_patch.tooltip": "Use a generic patch when a shader pack lacks voxy.json",
-
   "voxy.config.general.render_fog": "Enable render fog",
   "voxy.config.general.render_fog.tooltip": "Enables or disables render fog effect",
 

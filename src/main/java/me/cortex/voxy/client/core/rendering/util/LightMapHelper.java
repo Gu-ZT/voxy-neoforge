@@ -9,12 +9,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.LightTexture;
 
 public class LightMapHelper {
-    public static void bind(int lightingIndex) {
-        glBindSampler(lightingIndex, 0);
-
-        // Use the same lightmap texture id that the rest of the renderer uses.
-        // This matters under Iris/shaderpacks because the effective shader texture bindings can differ from the raw
-        // DynamicTexture id.
+    public static int getLightmapTextureId() {
         LightTexture lightTexture = Minecraft.getInstance().gameRenderer.lightTexture();
         try {
             lightTexture.turnOnLightLayer(); // ensures RenderSystem shader texture 2 is populated
@@ -36,7 +31,11 @@ public class LightMapHelper {
                 glId = 0;
             }
         }
+        return glId;
+    }
 
-        glBindTextureUnit(lightingIndex, glId);
+    public static void bind(int lightingIndex) {
+        glBindSampler(lightingIndex, 0);
+        glBindTextureUnit(lightingIndex, getLightmapTextureId());
     }
 }

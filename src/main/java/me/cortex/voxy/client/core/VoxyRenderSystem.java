@@ -46,6 +46,7 @@ import org.lwjgl.opengl.GL11;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.lwjgl.opengl.GL11.GL_VIEWPORT;
 import static org.lwjgl.opengl.GL11.glGetIntegerv;
@@ -68,6 +69,10 @@ public class VoxyRenderSystem {
 
     private static final boolean RENDER_LODS_IN_IRIS_SHADOW_PASS =
             System.getProperty("voxy.renderLodsInIrisShadowPass", "false").equalsIgnoreCase("true");
+    private static final long IRIS_RECREATE_MIN_INTERVAL_NANOS =
+            Long.getLong("voxy.irisRecreateMinIntervalMs", 1500L) * 1_000_000L;
+    private static final AtomicBoolean IRIS_RECREATE_QUEUED = new AtomicBoolean(false);
+    private static volatile long lastIrisRecreateNanos = 0L;
 
     private final WorldEngine worldIn;
 
@@ -87,6 +92,55 @@ public class VoxyRenderSystem {
 
     private final AbstractRenderPipeline pipeline;
 
+    public boolean isUsingIrisPipeline() {
+        return this.pipeline instanceof IrisVoxyRenderPipeline;
+    }
+
+    public String getPipelineSimpleName() {
+        return this.pipeline.getClass().getSimpleName();
+    }
+
+    public static void scheduleRendererRecreate(String reason) {
+        var mc = Minecraft.getInstance();
+        if (mc == null || mc.levelRenderer == null) {
+            return;
+        }
+
+        long now = System.nanoTime();
+        long sinceLast = now - lastIrisRecreateNanos;
+        if (sinceLast < IRIS_RECREATE_MIN_INTERVAL_NANOS) {
+            return;
+        }
+        if (!IRIS_RECREATE_QUEUED.compareAndSet(false, true)) {
+            return;
+        }
+        lastIrisRecreateNanos = now;
+
+        Logger.info("[VoxyRecreate] Queued renderer recreate; reason='" + reason + "'");
+        mc.execute(() -> {
+            try {
+                var getter = (IGetVoxyRenderSystem) mc.levelRenderer;
+                if (getter == null) {
+                    return;
+                }
+
+                var before = getter.getVoxyRenderSystem();
+                String beforePipeline = before == null ? "none" : before.getPipelineSimpleName();
+                getter.shutdownRenderer();
+                if (mc.level != null) {
+                    getter.createRenderer();
+                }
+                var after = getter.getVoxyRenderSystem();
+                String afterPipeline = after == null ? "none" : after.getPipelineSimpleName();
+                Logger.info("[VoxyRecreate] Renderer recreate complete; before=" + beforePipeline + " after=" + afterPipeline);
+            } catch (Throwable t) {
+                Logger.error("[VoxyRecreate] Renderer recreate failed", t);
+            } finally {
+                IRIS_RECREATE_QUEUED.set(false);
+            }
+        });
+    }
+
     private static AbstractSectionRenderer.Factory<?,? extends IGeometryData> getRenderBackendFactory() {
         //TODO: need todo a thing where selects optimal section render based on if supports the pipeline and geometry data type
         return MDICSectionRenderer.FACTORY;
@@ -103,7 +157,7 @@ public class VoxyRenderSystem {
         }
 
         //Fking HATE EVERYTHING AAAAAAAAAAAAAAAA
-        int[] oldBufferBindings = new int[10];
+        int[] oldBufferBindings = new int[16];
         for (int i = 0; i < oldBufferBindings.length; i++) {
             oldBufferBindings[i] = glGetIntegeri(GL_SHADER_STORAGE_BUFFER_BINDING, i);
         }
@@ -175,7 +229,7 @@ public class VoxyRenderSystem {
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, oldBufferBindings[i]);
         }
 
-        for (int i = 0; i < 12; i++) {
+        for (int i = 0; i < 16; i++) {
             GlStateManager._activeTexture(GlConst.GL_TEXTURE0+i);
             GlStateManager._bindTexture(0);
             glBindSampler(i, 0);
@@ -385,13 +439,13 @@ public class VoxyRenderSystem {
         }
         this.renderOpaqueNullViewportWarmupFrames = 0;
         // Only skip the opaque pass when shadow is active AND we are using the IrisVoxyRenderPipeline,
-        // which has its own dedicated shadow render path (renderShadowPass).
+        // where we intentionally suppress the main pass during Iris shadow rendering.
         // For NormalRenderPipeline, Embeddium's CUTOUT hook is the sole render entry point;
         // blocking it here causes LODs to be completely invisible when Iris is loaded but
         // the shader pack is not instrumented for Voxy (no voxy.json).
         if (IrisCompatManager.isShadowActive() && !RENDER_LODS_IN_IRIS_SHADOW_PASS) {
             if (this.pipeline instanceof IrisVoxyRenderPipeline) {
-                return; // Shadow handled by MixinShadowRenderer.renderShadowPass()
+                return; // Skip Voxy main pass while Iris shadow pass is active.
             }
             // NormalRenderPipeline has no dedicated shadow path — Embeddium CUTOUT hook is the
             // only render entry point. Log once so we can confirm this code path is reached.
@@ -420,8 +474,7 @@ public class VoxyRenderSystem {
                         + " pipeline=" + this.pipeline.getClass().getSimpleName()
                         + " sectionCount=" + sc
                         + " meshQueue=" + this.renderGen.getTaskCount()
-                        + " meshCompleted=" + RenderGenerationService.MESH_COMPLETED_COUNTER.get()
-                        + " meshFailed=" + RenderGenerationService.MESH_FAILED_COUNTER.get()
+                        + " meshRetries=" + RenderGenerationService.MESH_RETRY_COUNTER.get()
                         + " modelQueue=" + this.modelService.getProcessingCount()
                         + " cam=(" + String.format("%.0f,%.0f,%.0f", viewport.cameraX, viewport.cameraY, viewport.cameraZ) + ")"
                         + " viewport=" + viewport.width + "x" + viewport.height
@@ -505,19 +558,21 @@ public class VoxyRenderSystem {
         {//Reset state manager stuffs
             glUseProgram(0);
             glEnable(GL_DEPTH_TEST);
+            glDisable(GL_STENCIL_TEST);
 
             GlStateManager._glBindVertexArray(0);//Clear binding
 
             GlStateManager._activeTexture(GlConst.GL_TEXTURE1);
-            for (int i = 0; i < 12; i++) {
+            for (int i = 0; i < 16; i++) {
                 GlStateManager._activeTexture(GlConst.GL_TEXTURE0+i);
                 GlStateManager._bindTexture(0);
                 glBindSampler(i, 0);
             }
+            GlStateManager._activeTexture(GlConst.GL_TEXTURE0);
 
             IrisCompatManager.clearSamplers();
 
-            for (int i = 0; i < 10; i++) {
+            for (int i = 0; i < 16; i++) {
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, 0);
             }
         }
@@ -629,52 +684,6 @@ public class VoxyRenderSystem {
         }
         return this.viewportSelector.getViewport();
     }
-
-    public Viewport<?> getViewportForUniforms() {
-        return this.viewportSelector.getViewport();
-    }
-
-    /**
-     * Force-blits Voxy LOD depth into the main vanilla framebuffer so that vanilla
-     * geometry rendered afterwards (clouds, sky) depth-tests correctly against LODs.
-     *
-     * Called from MixinLevelRendererClouds before renderClouds() fires.
-     * Needed because IrisVoxyRenderPipeline.finish() skips the depth blit when
-     * excludeLodsFromVanillaDepth=true (Iris manages its own depth compositing),
-     * but vanilla clouds always read from the main FB depth — so without this call
-     * clouds appear in front of LODs even at distant ranges.
-     *
-     * No-op when:
-     * - Not using IrisVoxyRenderPipeline (NormalRenderPipeline always blits depth in finish())
-     * - renderToVanillaDepth is already true (finish() already blitted it)
-     * - No current viewport (shadow pass or pre-world)
-     * - Framebuffer not yet bound (cachedFramebufferId == 0)
-     */
-    public void blitDepthBeforeClouds() {
-        if (!(this.pipeline instanceof IrisVoxyRenderPipeline irisPipe)) return;
-        if (irisPipe.data.renderToVanillaDepth) return; // finish() already blitted
-        var viewport = this.getViewport();
-        if (viewport == null) return;
-        if (this.cachedFramebufferId == 0) return;
-        if (this.cachedViewportW != viewport.width || this.cachedViewportH != viewport.height) return;
-        // fbTranslucent.depthBuffer is null until the first runPipeline() call resizes it.
-        // Guard here so clouds on the very first frame (before any LOD render) don't crash.
-        var depthTex = irisPipe.fbTranslucent.getDepthTex();
-        if (depthTex == null) return;
-
-        glColorMask(false, false, false, false);
-        AbstractRenderPipeline.transformBlitDepth(
-                irisPipe.depthBlit,
-                depthTex.id,
-                this.cachedFramebufferId,
-                viewport,
-                new org.joml.Matrix4f(viewport.vanillaProjection).mul(viewport.modelView));
-        glColorMask(true, true, true, true);
-    }
-
-
-
-
 
     public void addDebugInfo(List<String> debug) {
         debug.add("Buf/Tex [#/Mb]: [" + GlBuffer.getCount() + "/" + (GlBuffer.getTotalSize()/1_000_000) + "],[" + GlTexture.getCount() + "/" + (GlTexture.getEstimatedTotalSize()/1_000_000)+"]");
