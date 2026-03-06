@@ -172,6 +172,33 @@ bash scripts/voxy_log_triage.sh .tmp/logs/latest-craftoria-aftertest.log
 - `Implementation Map` (points directly to source files)
 - `Recommended Actions`
 
+### voxy_churn_diagnose.sh
+
+**Purpose:** Low-noise diagnosis for flashing/reload behavior by focusing only on pipeline churn + chunk worker restarts + section transition churn.
+
+**Usage:**
+```bash
+# Auto-detect common latest.log locations
+bash scripts/voxy_churn_diagnose.sh
+
+# Explicit file + timeline size
+bash scripts/voxy_churn_diagnose.sh /path/to/latest.log 50
+```
+
+**What it reports:**
+- `iris_destroy_pipeline` / `iris_create_pipeline`
+- shader compile and pipeline-fail counts
+- `ChunkBuilder` stop/start counts
+- `[VoxyDiag] sectionTransitions` peaks:
+  - `builtToUnbuilt`, `unbuiltToBuilt`
+  - `chunkBoundAddQ`, `chunkBoundRemQ`, `chunkBoundTracked`
+- compact verdict flags:
+  - `shader_pipeline_unstable`
+  - `pipeline_rebuild_churn`
+  - `section_transition_churn`
+
+**Why use this over full triage:** It intentionally excludes broad mod noise and keeps only the signals tied to random LOD in/out flashing.
+
 ## Validation Workflow
 
 ### Before Creating New Mixin

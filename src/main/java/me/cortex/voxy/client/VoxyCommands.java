@@ -7,6 +7,7 @@ import com.mojang.brigadier.suggestion.Suggestions;
 import com.mojang.brigadier.suggestion.SuggestionsBuilder;
 import me.cortex.voxy.client.compat.IrisCompatManager;
 import me.cortex.voxy.client.core.IGetVoxyRenderSystem;
+import me.cortex.voxy.client.core.VoxyRenderSystem;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.commonImpl.VoxyCommon;
 import me.cortex.voxy.commonImpl.WorldIdentifier;
@@ -64,7 +65,38 @@ public class VoxyCommands {
         return Commands.literal("voxy")//.requires((ctx)-> VoxyCommon.getInstance() != null)
                 .then(Commands.literal("reload")
                         .executes(VoxyCommands::reloadInstance))
+                .then(Commands.literal("pipeline")
+                        .executes(VoxyCommands::pipelineState))
                 .then(imports);
+    }
+
+    private static int pipelineState(CommandContext<CommandSourceStack> ctx) {
+        var mc = Minecraft.getInstance();
+        var wr = mc.levelRenderer;
+        VoxyRenderSystem vrs = null;
+        if (wr != null) {
+            vrs = ((IGetVoxyRenderSystem) wr).getVoxyRenderSystem();
+        }
+
+        String dim = mc.level == null ? "none" : mc.level.dimension().location().toString();
+        boolean shaderPackEnabled = IrisCompatManager.isShaderPackEnabled();
+        boolean shadowActive = IrisCompatManager.isShadowActive();
+        String pipelineName = vrs == null ? "none" : vrs.getPipelineSimpleName();
+        String irisRoute = vrs == null ? "n/a" : (vrs.isUsingIrisPipeline() ? "IrisVoxy" : "Normal");
+
+        ctx.getSource().sendSuccess(() -> Component.literal(
+                "[Voxy] dim=" + dim
+                        + " pipeline=" + pipelineName
+                        + " route=" + irisRoute
+                        + " shaderPackEnabled=" + shaderPackEnabled
+                        + " shadowActive=" + shadowActive
+        ), false);
+        Logger.info("[VoxyPipelineState] dim=" + dim
+                + " pipeline=" + pipelineName
+                + " route=" + irisRoute
+                + " shaderPackEnabled=" + shaderPackEnabled
+                + " shadowActive=" + shadowActive);
+        return 0;
     }
 
     private static int reloadInstance(CommandContext<CommandSourceStack> ctx) {

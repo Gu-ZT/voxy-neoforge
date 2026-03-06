@@ -31,9 +31,8 @@ import static org.lwjgl.opengl.GL45.*;
 public class HierarchicalOcclusionTraverser {
     public static final boolean HIERARCHICAL_SHADER_DEBUG = System.getProperty("voxy.hierarchicalShaderDebug", "false").equals("true");
 
-    public static final int MAX_REQUEST_QUEUE_SIZE = 50;
+    public static final int MAX_REQUEST_QUEUE_SIZE = 24;
     public static final int MAX_QUEUE_SIZE = 200_000;
-
 
     private static final int MAX_ITERATIONS = WorldEngine.MAX_LOD_LAYER+1;
     private static final int LOCAL_WORK_SIZE_BITS = 5;
@@ -75,6 +74,12 @@ public class HierarchicalOcclusionTraverser {
             Double.parseDouble(System.getProperty("voxy.requestBudgetMaxStepUp", "6.0"));
     private static final double REQUEST_BUDGET_MAX_STEP_DOWN =
             Double.parseDouble(System.getProperty("voxy.requestBudgetMaxStepDown", "12.0"));
+    // Prefetch margin to reduce edge pop-in when rotating without fully disabling culling.
+    private static final float REQUEST_FRUSTUM_EXPANSION_BLOCKS =
+            Float.parseFloat(System.getProperty("voxy.requestFrustumExpansionBlocks", "48.0"));
+    // Keep near plane mostly strict to avoid aggressively warming geometry behind the camera.
+    private static final float REQUEST_FRUSTUM_NEAR_EXPANSION_BLOCKS =
+            Float.parseFloat(System.getProperty("voxy.requestFrustumNearExpansionBlocks", "0.0"));
     private double lastCamX = Double.NaN, lastCamY = Double.NaN, lastCamZ = Double.NaN;
     private float lastNearPlaneX = Float.NaN, lastNearPlaneY = Float.NaN, lastNearPlaneZ = Float.NaN;
     private double lastRequestBudget = Double.NaN;
@@ -192,7 +197,21 @@ public class HierarchicalOcclusionTraverser {
     private static void setFrustum(Viewport<?> viewport, long ptr) {
         for (int i = 0; i < 6; i++) {
             var plane = viewport.frustumPlanes[i];
-            plane.getToAddress(ptr); ptr += 4*4;
+            float nx = plane.x;
+            float ny = plane.y;
+            float nz = plane.z;
+            float d = plane.w;
+
+            float expansion = (i == 4) ? REQUEST_FRUSTUM_NEAR_EXPANSION_BLOCKS : REQUEST_FRUSTUM_EXPANSION_BLOCKS;
+            if (expansion != 0.0f) {
+                float nLen = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
+                d += expansion * nLen;
+            }
+
+            MemoryUtil.memPutFloat(ptr, nx); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, ny); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, nz); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, d); ptr += 4;
         }
     }
 

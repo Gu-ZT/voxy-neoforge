@@ -686,6 +686,15 @@ public class VoxyRenderSystem {
     }
 
     public void addDebugInfo(List<String> debug) {
+        var mc = Minecraft.getInstance();
+        String dim = (mc.level == null) ? "none" : mc.level.dimension().location().toString();
+        boolean shaderPackEnabled = IrisCompatManager.isShaderPackEnabled();
+        boolean shadowActive = IrisCompatManager.isShadowActive();
+        debug.add("Pipeline: " + this.getPipelineSimpleName()
+                + " route=" + (this.isUsingIrisPipeline() ? "IrisVoxy" : "Normal")
+                + " shaderPack=" + shaderPackEnabled
+                + " shadow=" + shadowActive
+                + " dim=" + dim);
         debug.add("Buf/Tex [#/Mb]: [" + GlBuffer.getCount() + "/" + (GlBuffer.getTotalSize()/1_000_000) + "],[" + GlTexture.getCount() + "/" + (GlTexture.getEstimatedTotalSize()/1_000_000)+"]");
         {
             this.modelService.addDebugData(debug);
