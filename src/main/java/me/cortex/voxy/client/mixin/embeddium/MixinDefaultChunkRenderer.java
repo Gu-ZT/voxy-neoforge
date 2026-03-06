@@ -47,6 +47,9 @@ public abstract class MixinDefaultChunkRenderer extends ShaderChunkRenderer {
         if (renderPass == DefaultTerrainRenderPasses.CUTOUT) {
             var renderer = ((IGetVoxyRenderSystem) Minecraft.getInstance().levelRenderer).getVoxyRenderSystem();
             if (renderer != null) {
+                if (renderer.isShuttingDown()) {
+                    return;
+                }
                 // Skip during Iris shadow pass: Embeddium renders CUTOUT during shadow too,
                 // so without this guard setupViewport() would cache the shadow FBO id into
                 // cachedFramebufferId. The main render then submits LODs into the shadow FB → flashing.

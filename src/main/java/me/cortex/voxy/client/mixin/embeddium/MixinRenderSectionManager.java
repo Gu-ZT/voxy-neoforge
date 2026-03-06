@@ -1,5 +1,6 @@
 package me.cortex.voxy.client.mixin.embeddium;
 
+import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import me.cortex.voxy.client.ICheekyClientChunkCache;
 import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.IGetVoxyRenderSystem;
@@ -39,10 +40,21 @@ public class MixinRenderSectionManager {
             System.getProperty("voxy.logSectionTransitions", "true").equalsIgnoreCase("true");
     @Unique private static final long VOXY_SECTION_TRANSITION_LOG_INTERVAL_NANOS =
             Long.getLong("voxy.sectionTransitionLogIntervalMs", 2000L) * 1_000_000L;
+    @Unique private static final boolean VOXY_LOG_INGEST_DIAG =
+            System.getProperty("voxy.logIngestDiagnostics", "true").equalsIgnoreCase("true");
+    @Unique private static final long VOXY_INGEST_RETRY_NANOS =
+            Long.getLong("voxy.ingestRetryMs", 2000L) * 1_000_000L;
+    @Unique private static final int VOXY_INGEST_DIAG_LOG_EVERY =
+            Integer.getInteger("voxy.ingestDiagLogEvery", 200);
     @Unique private static long voxy$lastSectionTransitionLogNanos = System.nanoTime();
     @Unique private static int voxy$transitionBuiltToUnbuilt;
     @Unique private static int voxy$transitionUnbuiltToBuilt;
     @Unique private static int voxy$transitionNoop;
+    @Unique private final Long2LongOpenHashMap voxy$recentChunkIngestNanos = new Long2LongOpenHashMap();
+    @Unique private int voxy$ingestAttempted;
+    @Unique private int voxy$ingestSucceeded;
+    @Unique private int voxy$ingestSkippedCooldown;
+    @Unique private int voxy$ingestChunkMissing;
 
     // Reset mask when Embeddium recreates RenderSectionManager (render distance change, reload, etc).
     // Safe because Embeddium immediately re-queues all sections for build after construction,
@@ -73,17 +85,9 @@ public class MixinRenderSectionManager {
     }
 
     // Ingest on chunk add
-    @Inject(method = "onChunkAdded", at = @At("HEAD"))
+    @Inject(method = "onChunkAdded", at = @At("TAIL"))
     private void voxy$ingestOnAdd(int x, int z, CallbackInfo ci) {
-        if (this.world.levelRenderer != null && VoxyConfig.CONFIG.isIngestEnabled()) {
-            var cccm = this.world.getChunkSource();
-            if (cccm != null) {
-                var chunk = cccm.getChunk(x, z, ChunkStatus.FULL, false);
-                if (chunk != null) {
-                    VoxelIngestService.tryAutoIngestChunk(chunk);
-                }
-            }
-        }
+        this.voxy$tryIngestChunk(x, z, "chunk_added");
     }
 
     @Unique private long cachedChunkPos = -1;
@@ -118,6 +122,7 @@ public class MixinRenderSectionManager {
             voxy$transitionUnbuiltToBuilt++;
             // Transition: unbuilt → built. Add to depth mask.
             system.chunkBoundRenderer.addSection(pos);
+            this.voxy$tryIngestChunk(x, z, "section_built");
         } else {
             voxy$transitionBuiltToUnbuilt++;
             // Transition: built → unbuilt. Remove from depth mask.
@@ -177,5 +182,53 @@ public class MixinRenderSectionManager {
         voxy$transitionUnbuiltToBuilt = 0;
         voxy$transitionNoop = 0;
         voxy$lastSectionTransitionLogNanos = now;
+    }
+
+    @Unique
+    private void voxy$tryIngestChunk(int x, int z, String reason) {
+        if (this.world.levelRenderer == null || !VoxyConfig.CONFIG.isIngestEnabled()) {
+            return;
+        }
+        long now = System.nanoTime();
+        long key = ChunkPos.asLong(x, z);
+        long last = this.voxy$recentChunkIngestNanos.getOrDefault(key, Long.MIN_VALUE);
+        if (last != Long.MIN_VALUE && (now - last) < VOXY_INGEST_RETRY_NANOS) {
+            this.voxy$ingestSkippedCooldown++;
+            return;
+        }
+        if (this.voxy$recentChunkIngestNanos.size() > 32768) {
+            this.voxy$recentChunkIngestNanos.clear();
+        }
+        this.voxy$recentChunkIngestNanos.put(key, now);
+
+        this.voxy$ingestAttempted++;
+        var chunkSource = this.world.getChunkSource();
+        if (chunkSource == null) {
+            return;
+        }
+        var chunk = chunkSource.getChunk(x, z, ChunkStatus.FULL, false);
+        if (chunk == null) {
+            this.voxy$ingestChunkMissing++;
+            this.voxy$maybeLogIngestDiag(reason);
+            return;
+        }
+        if (VoxelIngestService.tryAutoIngestChunk(chunk)) {
+            this.voxy$ingestSucceeded++;
+        }
+        this.voxy$maybeLogIngestDiag(reason);
+    }
+
+    @Unique
+    private void voxy$maybeLogIngestDiag(String reason) {
+        if (!VOXY_LOG_INGEST_DIAG) return;
+        if (VOXY_INGEST_DIAG_LOG_EVERY <= 0) return;
+        if ((this.voxy$ingestAttempted % VOXY_INGEST_DIAG_LOG_EVERY) != 0) return;
+
+        Logger.info("[VoxyDiag] ingestAttempts=" + this.voxy$ingestAttempted
+                + " succeeded=" + this.voxy$ingestSucceeded
+                + " missingChunk=" + this.voxy$ingestChunkMissing
+                + " skippedCooldown=" + this.voxy$ingestSkippedCooldown
+                + " reason=" + reason
+                + " retryMs=" + (VOXY_INGEST_RETRY_NANOS / 1_000_000L));
     }
 }

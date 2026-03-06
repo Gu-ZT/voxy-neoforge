@@ -30,6 +30,16 @@ public class UploadStream {
     private final Deque<UploadData> uploadList = new ArrayDeque<>();
 
     private static final boolean USE_COHERENT = false;
+    private static final int STREAM_FULL_ATTEMPTS =
+            Math.max(1, Integer.getInteger("voxy.uploadStreamFullAttempts", 4));
+    private static final boolean LOG_UPLOAD_PRESSURE =
+            System.getProperty("voxy.logUploadPressure", "true").equalsIgnoreCase("true");
+    private static final int LOG_UPLOAD_PRESSURE_EVERY =
+            Math.max(1, Integer.getInteger("voxy.uploadPressureLogEvery", 10));
+    private long streamFullEvents;
+    private long streamFullRecoveredWithoutFinish;
+    private long streamFullForcedFinishCalls;
+    private long streamFullHardFailures;
 
     public UploadStream(long size) {
         this.uploadBuffer = new GlPersistentMappedBuffer(size,GL_CLIENT_STORAGE_BIT|GL_MAP_WRITE_BIT|GL_MAP_UNSYNCHRONIZED_BIT|(USE_COHERENT?GL_MAP_COHERENT_BIT:GL_MAP_FLUSH_EXPLICIT_BIT)).name("UploadStream");
@@ -77,19 +87,31 @@ public class UploadStream {
             }
             this.caddr = this.allocationArena.alloc((int) size);//TODO: replace with allocFromLargest
             if (this.caddr == SIZE_LIMIT) {
+                this.streamFullEvents++;
                 //Note! we dont commit here, we only try to flush existing memory copies, we dont commit
                 // since commit is an explicit op saying we are done any to push upload everything
                 //We dont commit since we dont want to invalidate existing upload pointers
-                Logger.error("Upload stream full, preemptively committing, this could cause bad things to happen");
-                int attempts = 10;
+                // First attempt a non-blocking reclaim pass before any hard GPU stall.
+                this.tick(false);
+                this.caddr = this.allocationArena.alloc((int) size);
+                if (this.caddr != SIZE_LIMIT) {
+                    this.streamFullRecoveredWithoutFinish++;
+                    this.maybeLogUploadPressure();
+                }
+
+                int attempts = STREAM_FULL_ATTEMPTS;
                 while (--attempts != 0 && this.caddr == SIZE_LIMIT) {
+                    this.streamFullForcedFinishCalls++;
                     glFinish();
                     this.tick(false);
                     this.caddr = this.allocationArena.alloc((int) size);
                 }
                 if (this.caddr == SIZE_LIMIT) {
+                    this.streamFullHardFailures++;
+                    this.maybeLogUploadPressure();
                     throw new IllegalStateException("Could not allocate memory segment big enough for upload even after force flush");
                 }
+                this.maybeLogUploadPressure();
             }
             this.thisFrameAllocations.add(this.caddr);
             this.offset = size;
@@ -161,6 +183,20 @@ public class UploadStream {
 
     public int getRawBufferId() {
         return this.uploadBuffer.id;
+    }
+
+    private void maybeLogUploadPressure() {
+        if (!LOG_UPLOAD_PRESSURE) {
+            return;
+        }
+        if ((this.streamFullEvents % LOG_UPLOAD_PRESSURE_EVERY) != 0) {
+            return;
+        }
+        Logger.info("[VoxyDiag] uploadPressure events=" + this.streamFullEvents
+                + " recoveredNoFinish=" + this.streamFullRecoveredWithoutFinish
+                + " forcedFinishCalls=" + this.streamFullForcedFinishCalls
+                + " hardFailures=" + this.streamFullHardFailures
+                + " attempts=" + STREAM_FULL_ATTEMPTS);
     }
 
     private record UploadFrame(GlFence fence, LongArrayList allocations) {}

@@ -19,9 +19,20 @@ import net.minecraft.world.level.lighting.LayerLightSectionStorage;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class VoxelIngestService {
     private static final ThreadLocal<VoxelizedSection> SECTION_CACHE = ThreadLocal.withInitial(VoxelizedSection::createEmpty);
+    private static final boolean ALLOW_INGEST_WITHOUT_LIGHTING =
+            System.getProperty("voxy.ingestAllowNoLighting", "true").equalsIgnoreCase("true");
+    private static final boolean LOG_INGEST_DIAGNOSTICS =
+            System.getProperty("voxy.logIngestDiagnostics", "true").equalsIgnoreCase("true");
+    private static final int INGEST_DIAG_LOG_EVERY =
+            Integer.getInteger("voxy.ingestDiagLogEvery", 200);
+    private static final AtomicLong INGEST_ATTEMPTS = new AtomicLong();
+    private static final AtomicLong INGEST_ENQUEUED = new AtomicLong();
+    private static final AtomicLong INGEST_NO_LIGHTING = new AtomicLong();
+    private static final AtomicLong INGEST_EMPTY_WITHOUT_LIGHTING = new AtomicLong();
     private final Service service;
     private record IngestSection(int cx, int cy, int cz, WorldEngine world, LevelChunkSection section, DataLayer blockLight, DataLayer skyLight){}
     private final ConcurrentLinkedDeque<IngestSection> ingestQueue = new ConcurrentLinkedDeque<>();
@@ -88,6 +99,7 @@ public class VoxelIngestService {
     }
 
     public boolean enqueueIngest(WorldEngine engine, LevelChunk chunk) {
+        long attempts = INGEST_ATTEMPTS.incrementAndGet();
         if (!this.service.isLive()) {
             return false;
         }
@@ -115,6 +127,7 @@ public class VoxelIngestService {
         }
 
         if (allEmpty&&!gotLighting) {
+            INGEST_EMPTY_WITHOUT_LIGHTING.incrementAndGet();
             //Special case all empty chunk columns, we need to clear it out
             // MC 1.21.1: LevelChunk.getMinSectionY() → chunk.getLevel().getMinSection()
             i = chunk.getLevel().getMinSection() - 1;
@@ -130,10 +143,28 @@ public class VoxelIngestService {
                     break;
                 }
             }
+            if (LOG_INGEST_DIAGNOSTICS && INGEST_DIAG_LOG_EVERY > 0 && (attempts % INGEST_DIAG_LOG_EVERY) == 0) {
+                Logger.info("[VoxyDiag] ingest attempts=" + attempts
+                        + " enqueued=" + INGEST_ENQUEUED.get()
+                        + " noLighting=" + INGEST_NO_LIGHTING.get()
+                        + " emptyNoLighting=" + INGEST_EMPTY_WITHOUT_LIGHTING.get()
+                        + " allowNoLighting=" + ALLOW_INGEST_WITHOUT_LIGHTING);
+            }
+            return true;
         }
 
         if (!gotLighting) {
-            return false;
+            INGEST_NO_LIGHTING.incrementAndGet();
+            if (!ALLOW_INGEST_WITHOUT_LIGHTING) {
+                if (LOG_INGEST_DIAGNOSTICS && INGEST_DIAG_LOG_EVERY > 0 && (attempts % INGEST_DIAG_LOG_EVERY) == 0) {
+                    Logger.info("[VoxyDiag] ingest attempts=" + attempts
+                            + " enqueued=" + INGEST_ENQUEUED.get()
+                            + " noLighting=" + INGEST_NO_LIGHTING.get()
+                            + " emptyNoLighting=" + INGEST_EMPTY_WITHOUT_LIGHTING.get()
+                            + " allowNoLighting=" + ALLOW_INGEST_WITHOUT_LIGHTING);
+                }
+                return false;
+            }
         }
 
         var blp = lightingProvider.getLayerListener(LightLayer.BLOCK);
@@ -148,14 +179,17 @@ public class VoxelIngestService {
             //if (section.isEmpty()) continue;
             var pos = SectionPos.of(chunk.getPos(), i);
 
-            var bl = blp.getDataLayerData(pos);
-            if (bl != null) {
-                bl = bl.copy();
-            }
-
-            var sl = slp.getDataLayerData(pos);
-            if (sl != null) {
-                sl = sl.copy();
+            DataLayer bl = null;
+            DataLayer sl = null;
+            if (gotLighting) {
+                bl = blp.getDataLayerData(pos);
+                if (bl != null) {
+                    bl = bl.copy();
+                }
+                sl = slp.getDataLayerData(pos);
+                if (sl != null) {
+                    sl = sl.copy();
+                }
             }
 
             //If its null for either, assume failure to obtain lighting and ignore section
@@ -164,12 +198,20 @@ public class VoxelIngestService {
             //}
             engine.markActive();
             this.ingestQueue.add(new IngestSection(chunk.getPos().x, i, chunk.getPos().z, engine, section, bl, sl));//TODO: fixme, this is technically not safe todo on the chunk load ingest, we need to copy the section data so it cant be modified while being read
+            INGEST_ENQUEUED.incrementAndGet();
             try {
                 this.service.execute();
             } catch (Exception e) {
                 Logger.error("Executing had an error: assume shutting down, aborting",e);
                 break;
             }
+        }
+        if (LOG_INGEST_DIAGNOSTICS && INGEST_DIAG_LOG_EVERY > 0 && (attempts % INGEST_DIAG_LOG_EVERY) == 0) {
+            Logger.info("[VoxyDiag] ingest attempts=" + attempts
+                    + " enqueued=" + INGEST_ENQUEUED.get()
+                    + " noLighting=" + INGEST_NO_LIGHTING.get()
+                    + " emptyNoLighting=" + INGEST_EMPTY_WITHOUT_LIGHTING.get()
+                    + " allowNoLighting=" + ALLOW_INGEST_WITHOUT_LIGHTING);
         }
         return true;
     }

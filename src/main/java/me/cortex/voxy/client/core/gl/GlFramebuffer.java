@@ -2,6 +2,10 @@ package me.cortex.voxy.client.core.gl;
 
 import me.cortex.voxy.common.util.TrackedObject;
 
+import static org.lwjgl.opengl.GL11C.glGetInteger;
+import static org.lwjgl.opengl.GL30C.glBindFramebuffer;
+import static org.lwjgl.opengl.GL30C.glCheckFramebufferStatus;
+import static org.lwjgl.opengl.GL30C.GL_FRAMEBUFFER_BINDING;
 import static org.lwjgl.opengl.GL45C.*;
 import static org.lwjgl.opengl.GL45C.glNamedFramebufferDrawBuffers;
 
@@ -38,10 +42,26 @@ public class GlFramebuffer extends TrackedObject {
 
     public GlFramebuffer verify() {
         int code;
-        if ((code = glCheckNamedFramebufferStatus(this.id, GL_FRAMEBUFFER)) != GL_FRAMEBUFFER_COMPLETE) {
-            throw new IllegalStateException("Framebuffer incomplete with error code: " + code);
+        code = glCheckNamedFramebufferStatus(this.id, GL_FRAMEBUFFER);
+        if (code == GL_FRAMEBUFFER_COMPLETE) {
+            return this;
         }
-        return this;
+
+        // Some driver stacks can return 0 from glCheckNamedFramebufferStatus on otherwise valid FBOs.
+        // Fall back to the bind-to-target check path before failing hard.
+        if (code == 0) {
+            int oldFramebuffer = glGetInteger(GL_FRAMEBUFFER_BINDING);
+            int fallbackCode;
+            glBindFramebuffer(GL_FRAMEBUFFER, this.id);
+            fallbackCode = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            glBindFramebuffer(GL_FRAMEBUFFER, oldFramebuffer);
+            if (fallbackCode == GL_FRAMEBUFFER_COMPLETE) {
+                return this;
+            }
+            throw new IllegalStateException("Framebuffer incomplete with error code: named=0 fallback=" + fallbackCode);
+        }
+
+        throw new IllegalStateException("Framebuffer incomplete with error code: " + code);
     }
 
 

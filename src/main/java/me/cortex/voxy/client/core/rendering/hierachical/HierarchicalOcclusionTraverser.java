@@ -31,7 +31,7 @@ import static org.lwjgl.opengl.GL45.*;
 public class HierarchicalOcclusionTraverser {
     public static final boolean HIERARCHICAL_SHADER_DEBUG = System.getProperty("voxy.hierarchicalShaderDebug", "false").equals("true");
 
-    public static final int MAX_REQUEST_QUEUE_SIZE = 24;
+    public static final int MAX_REQUEST_QUEUE_SIZE = 32;
     public static final int MAX_QUEUE_SIZE = 200_000;
 
     private static final int MAX_ITERATIONS = WorldEngine.MAX_LOD_LAYER+1;
@@ -309,8 +309,9 @@ public class HierarchicalOcclusionTraverser {
             MemoryUtil.memPutInt(ptr, Math.max(0, Math.min(MAX_REQUEST_QUEUE_SIZE, requestSize)));ptr += 4;
         }
 
-        //Put the render distance here so that it can generate a correct circle, TODO: make it not top level section sized
-        MemoryUtil.memPutFloat(ptr, (float) Math.pow(VoxyConfig.CONFIG.getSectionRenderDistance()*16*32,2));ptr += 4;
+        // Keep traversal circle radius aligned with RenderDistanceTracker (+1 safety ring).
+        int effectiveSectionDistance = Math.max(2, VoxyConfig.CONFIG.getSectionRenderDistance() + 1);
+        MemoryUtil.memPutFloat(ptr, (float) Math.pow(effectiveSectionDistance*16*32,2));ptr += 4;
     }
 
     private void bindings(Viewport<?> viewport) {

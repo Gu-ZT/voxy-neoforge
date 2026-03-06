@@ -31,9 +31,10 @@ public abstract class MixinLevelRenderer implements IGetVoxyRenderSystem {
 
     @Inject(method = "allChanged()V", at = @At("RETURN"), order = 900)//We want to inject before embeddium
     private void reloadVoxyRenderer(CallbackInfo ci) {
-        this.shutdownRenderer();
         if (this.level != null) {
-            this.createRenderer();
+            // allChanged() can fire multiple times during shader/dimension transitions.
+            // Route through the debounced scheduler to avoid teardown/recreate storms.
+            VoxyRenderSystem.scheduleRendererRecreate("LevelRenderer#allChanged");
         }
     }
 
@@ -52,8 +53,9 @@ public abstract class MixinLevelRenderer implements IGetVoxyRenderSystem {
     @Override
     public void shutdownRenderer() {
         if (this.renderer != null) {
-            this.renderer.shutdown();
+            VoxyRenderSystem old = this.renderer;
             this.renderer = null;
+            old.shutdown();
         }
     }
 

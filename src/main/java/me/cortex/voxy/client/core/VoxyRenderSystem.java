@@ -66,6 +66,25 @@ import static org.lwjgl.opengl.GL45C.glBindTextureUnit;
 
 public class VoxyRenderSystem {
     private static final long SPARSE_GEOMETRY_MIN_BYTES = 1024L * 1024L * 1024L; // 1GB virtual address space floor for NVIDIA sparse buffers
+    private static final boolean FORCE_GC_ON_RENDERER_CREATE =
+            Boolean.getBoolean("voxy.forceGcOnRendererCreate");
+    private static final boolean FORCE_SYNC_ON_RENDERER_CREATE =
+            Boolean.getBoolean("voxy.syncOnRendererCreate");
+    private static final boolean FORCE_SYNC_IN_FREX_WORK_LOOP =
+            Boolean.getBoolean("voxy.syncInFrexWorkLoop");
+    private static final boolean QUERY_VIEWPORT_EACH_FRAME =
+            Boolean.getBoolean("voxy.queryViewportEachFrame");
+    private static final int TRACKER_MAX_PASSES_PER_FRAME = 24;
+    private static final long TRACKER_BUDGET_NS = 2_000_000L;
+    private static final int MODEL_MAX_PASSES_PER_FRAME = 6;
+    private static final long MODEL_BUDGET_NS_BASE =
+            Long.getLong("voxy.modelBudgetBaseNs", 1_200_000L);
+    private static final long MODEL_BUDGET_NS_MIN =
+            Long.getLong("voxy.modelBudgetMinNs", 250_000L);
+    private static final long MODEL_BUDGET_NS_MAX =
+            Long.getLong("voxy.modelBudgetMaxNs", 2_000_000L);
+    private static final long TARGET_FRAME_BUDGET_NS =
+            Long.getLong("voxy.targetFrameBudgetNs", 16_666_667L);
 
     private static final boolean RENDER_LODS_IN_IRIS_SHADOW_PASS =
             System.getProperty("voxy.renderLodsInIrisShadowPass", "false").equalsIgnoreCase("true");
@@ -91,6 +110,7 @@ public class VoxyRenderSystem {
     private final ViewportSelector<?> viewportSelector;
 
     private final AbstractRenderPipeline pipeline;
+    private volatile boolean shuttingDown = false;
 
     public boolean isUsingIrisPipeline() {
         return this.pipeline instanceof IrisVoxyRenderPipeline;
@@ -98,6 +118,10 @@ public class VoxyRenderSystem {
 
     public String getPipelineSimpleName() {
         return this.pipeline.getClass().getSimpleName();
+    }
+
+    public boolean isShuttingDown() {
+        return this.shuttingDown;
     }
 
     public static void scheduleRendererRecreate(String reason) {
@@ -150,7 +174,9 @@ public class VoxyRenderSystem {
         //Keep the world loaded, NOTE: this is done FIRST, to keep and ensure that even if the rest of loading takes more
         // than timeout, we keep the world acquired
         world.acquireRef();
-        System.gc();
+        if (FORCE_GC_ON_RENDERER_CREATE) {
+            System.gc();
+        }
 
         if (Minecraft.getInstance().options.getEffectiveRenderDistance()<3) {
             Logger.warn("Having a vanilla render distance of 2 can cause rare culling near the edge of your screen issues, please use 3 or more");
@@ -163,9 +189,11 @@ public class VoxyRenderSystem {
         }
 
         try {
-            //wait for opengl to be finished, this should hopefully ensure all memory allocations are free
-            glFinish();
-            glFinish();
+            // Optional hard sync path for debugging driver/lifetime issues.
+            if (FORCE_SYNC_ON_RENDERER_CREATE) {
+                glFinish();
+                glFinish();
+            }
 
             this.worldIn = world;
 
@@ -239,6 +267,9 @@ public class VoxyRenderSystem {
 
     // Embeddium compatibility: FogParameters integration not wired
     public Viewport<?> setupViewport(Matrix4fc projection, Matrix4fc modelView, double cameraX, double cameraY, double cameraZ) {
+        if (this.shuttingDown) {
+            return null;
+        }
         var viewport = this.getViewport();
         if (viewport == null) {
             return null;
@@ -257,19 +288,27 @@ public class VoxyRenderSystem {
         //var projection = new Matrix4f(matrices.projection());
 
         // Query GL state once here; results are cached so renderOpaque() can skip the GL round-trips.
-        int[] dims = new int[4];
-        glGetIntegerv(GL_VIEWPORT, dims);
         this.cachedFramebufferId = GL11.glGetInteger(GL_DRAW_FRAMEBUFFER_BINDING);
-        this.cachedViewportX = dims[0];
-        this.cachedViewportY = dims[1];
-        this.cachedViewportW = dims[2];
-        this.cachedViewportH = dims[3];
+        if (QUERY_VIEWPORT_EACH_FRAME || IrisCompatManager.isShaderPackEnabled()) {
+            int[] dims = new int[4];
+            glGetIntegerv(GL_VIEWPORT, dims);
+            this.cachedViewportX = dims[0];
+            this.cachedViewportY = dims[1];
+            this.cachedViewportW = dims[2];
+            this.cachedViewportH = dims[3];
+        } else {
+            var target = Minecraft.getInstance().getMainRenderTarget();
+            this.cachedViewportX = 0;
+            this.cachedViewportY = 0;
+            this.cachedViewportW = target.width;
+            this.cachedViewportH = target.height;
+        }
 
-        int width = dims[2];
-        int height = dims[3];
+        int width = this.cachedViewportW;
+        int height = this.cachedViewportH;
 
         if ((width == 0 || height == 0) && setupViewportWarnCount++ < 3) {
-            Logger.warn("[DIAG] setupViewport: GL_VIEWPORT returned 0x0 (dims=" + dims[0] + "," + dims[1] + "," + dims[2] + "," + dims[3] + ") - LODs will not render this frame");
+            Logger.warn("[DIAG] setupViewport: viewport returned 0x0 (x=" + this.cachedViewportX + ", y=" + this.cachedViewportY + ", w=" + width + ", h=" + height + ") - LODs will not render this frame");
         }
 
         {//Apply render scaling factor
@@ -335,6 +374,9 @@ public class VoxyRenderSystem {
     }
 
     public void renderShadowPass(Matrix4fc projection, Matrix4fc modelView, double cameraX, double cameraY, double cameraZ) {
+        if (this.shuttingDown) {
+            return;
+        }
         var viewport = this.viewportSelector.getViewport();
         if (viewport == null) {
             return;
@@ -366,6 +408,9 @@ public class VoxyRenderSystem {
     }
 
     public void renderShadow(Viewport<?> viewport) {
+        if (this.shuttingDown) {
+            return;
+        }
         if (viewport == null) {
             return;
         }
@@ -422,8 +467,15 @@ public class VoxyRenderSystem {
     private int setupViewportWarnCount = 0;
     private int renderOpaqueFrameCount = 0;
     private int lastLoggedSectionCount = -1;
+    private long lastDynamicModelBudgetNs = MODEL_BUDGET_NS_BASE;
 
     public void renderOpaque(Viewport<?> viewport) {
+        if (this.shuttingDown) {
+            return;
+        }
+        if (IRIS_RECREATE_QUEUED.get()) {
+            return;
+        }
         if (viewport == null) {
             // Renderer/pipeline rebuild windows can produce a few frames without a valid viewport.
             // Suppress diagnostics in this short warmup period to avoid false-positive noise.
@@ -476,6 +528,7 @@ public class VoxyRenderSystem {
                         + " meshQueue=" + this.renderGen.getTaskCount()
                         + " meshRetries=" + RenderGenerationService.MESH_RETRY_COUNTER.get()
                         + " modelQueue=" + this.modelService.getProcessingCount()
+                        + " modelBudgetNs=" + this.lastDynamicModelBudgetNs
                         + " cam=(" + String.format("%.0f,%.0f,%.0f", viewport.cameraX, viewport.cameraY, viewport.cameraZ) + ")"
                         + " viewport=" + viewport.width + "x" + viewport.height
                         + " fb=" + this.cachedFramebufferId
@@ -522,7 +575,18 @@ public class VoxyRenderSystem {
 
         TimingStatistics.E.start();
         if ((!VoxyClient.disableEmbeddiumChunkRender()) && !IrisCompatManager.isShadowActive()) {
-            this.chunkBoundRenderer.render(viewport);
+            try {
+                this.chunkBoundRenderer.render(viewport);
+            } catch (IllegalStateException e) {
+                // During mid-frame teardown/recreate a stale chunk-bound pass can race with freed GL objects.
+                // Skip this pass for the current frame instead of hard-crashing the client.
+                if (e.getMessage() != null && e.getMessage().contains("should not be free")) {
+                    Logger.warn("[VoxyRecreate] ChunkBoundRenderer render skipped due to freed GL object");
+                    viewport.depthBoundingBuffer.clear(0);
+                } else {
+                    throw e;
+                }
+            }
         } else {
             viewport.depthBoundingBuffer.clear(0);
         }
@@ -542,9 +606,45 @@ public class VoxyRenderSystem {
         {
             UploadStream.INSTANCE.tick();
 
-            while (this.renderDistanceTracker.setCenterAndProcess(viewport.cameraX, viewport.cameraZ) && VoxyClient.isFrexActive());
+            long trackerStart = System.nanoTime();
+            for (int pass = 0; pass < TRACKER_MAX_PASSES_PER_FRAME; pass++) {
+                if (System.nanoTime() - trackerStart >= TRACKER_BUDGET_NS) {
+                    break;
+                }
+                if (!this.renderDistanceTracker.setCenterAndProcess(viewport.cameraX, viewport.cameraZ)) {
+                    break;
+                }
+            }
             TimingStatistics.H.start();
-            do { this.modelService.tick(900_000); } while (VoxyClient.isFrexActive() && !this.modelService.areQueuesEmpty());
+            int modelQueueCount = this.modelService.getProcessingCount();
+            long elapsedBeforeModelNs = System.nanoTime() - startTime;
+            long slackNs = Math.max(0L, TARGET_FRAME_BUDGET_NS - elapsedBeforeModelNs);
+            long dynamicModelBudgetNs;
+            if (elapsedBeforeModelNs >= TARGET_FRAME_BUDGET_NS) {
+                dynamicModelBudgetNs = MODEL_BUDGET_NS_MIN;
+            } else {
+                long slackLimited = Math.min(slackNs / 2, MODEL_BUDGET_NS_BASE + (slackNs / 6));
+                dynamicModelBudgetNs = Math.max(MODEL_BUDGET_NS_MIN, Math.min(MODEL_BUDGET_NS_MAX, slackLimited));
+            }
+            // Bias toward throughput while there is a large backlog, but never exceed max.
+            if (modelQueueCount > 600) {
+                dynamicModelBudgetNs = Math.min(MODEL_BUDGET_NS_MAX, dynamicModelBudgetNs + 450_000L);
+            } else if (modelQueueCount > 200) {
+                dynamicModelBudgetNs = Math.min(MODEL_BUDGET_NS_MAX, dynamicModelBudgetNs + 250_000L);
+            }
+            // If mesh generation pressure is high, reserve more frame time for terrain generation.
+            if (this.renderGen.getTaskCount() > 2000) {
+                dynamicModelBudgetNs = Math.max(MODEL_BUDGET_NS_MIN, dynamicModelBudgetNs / 2);
+            }
+            this.lastDynamicModelBudgetNs = dynamicModelBudgetNs;
+
+            long modelStart = System.nanoTime();
+            for (int pass = 0; pass < MODEL_MAX_PASSES_PER_FRAME && !this.modelService.areQueuesEmpty(); pass++) {
+                if (System.nanoTime() - modelStart >= dynamicModelBudgetNs) {
+                    break;
+                }
+                this.modelService.tick(Math.min(900_000L, dynamicModelBudgetNs), oldFB);
+            }
             TimingStatistics.H.stop();
         }
         GPUTiming.INSTANCE.marker();
@@ -669,13 +769,15 @@ public class VoxyRenderSystem {
         //If frex is running we must tick everything to ensure correctness
         UploadStream.INSTANCE.tick();
         //Done here as is allows less gl state resetup
-        this.modelService.tick(100_000_000);
-        GL11.glFinish();
+        this.modelService.tick(100_000_000L, -1);
+        if (FORCE_SYNC_IN_FREX_WORK_LOOP) {
+            GL11.glFinish();
+        }
         return this.nodeManager.hasWork() || this.renderGen.getTaskCount()!=0 || !this.modelService.areQueuesEmpty();
     }
 
     public void setRenderDistance(int renderDistance) {
-        this.renderDistanceTracker.setRenderDistance(renderDistance);
+        this.renderDistanceTracker.setRenderDistance(Math.max(2, renderDistance + 1));
     }
 
     public Viewport<?> getViewport() {
@@ -683,6 +785,16 @@ public class VoxyRenderSystem {
             return null;
         }
         return this.viewportSelector.getViewport();
+    }
+
+    public VoxyLoadingSnapshot getLoadingSnapshot() {
+        int sectionCount = this.pipeline.getSectionCount();
+        return new VoxyLoadingSnapshot(
+                this.renderGen.getTaskCount(),
+                this.modelService.getProcessingCount(),
+                this.nodeManager.hasWork(),
+                sectionCount,
+                this.shuttingDown);
     }
 
     public void addDebugInfo(List<String> debug) {
@@ -713,10 +825,21 @@ public class VoxyRenderSystem {
     }
 
     public void shutdown() {
-        Logger.info("Flushing download stream");
-        DownloadStream.INSTANCE.flushWaitClear();
-        Logger.info("Shutting down rendering");
+        if (this.shuttingDown) {
+            return;
+        }
+        this.shuttingDown = true;
         try {
+            Logger.info("Draining download stream (non-blocking)");
+            DownloadStream.INSTANCE.tick();
+            Logger.info("Flushing download stream before renderer teardown");
+            try {
+                DownloadStream.INSTANCE.flushWaitClear();
+            } catch (Exception e) {
+                Logger.error("Error flushing download stream before renderer shutdown", e);
+            }
+
+            Logger.info("Shutting down rendering");
             //Cleanup callbacks
             this.worldIn.setDirtyCallback(null);
             this.worldIn.getMapper().setBiomeCallback(null);
@@ -733,14 +856,22 @@ public class VoxyRenderSystem {
             this.chunkBoundRenderer.free();
 
             this.viewportSelector.free();
-        } catch (Exception e) {Logger.error("Error shutting down renderer components", e);}
+        } catch (Exception e) {
+            Logger.error("Error shutting down renderer components", e);
+        }
         Logger.info("Shutting down render pipeline");
-        try {this.pipeline.free();} catch (Exception e){Logger.error("Error releasing render pipeline", e);}
+        try {
+            this.pipeline.free();
+        } catch (Exception e) {
+            Logger.error("Error releasing render pipeline", e);
+        }
 
-
-
-        Logger.info("Flushing download stream");
-        DownloadStream.INSTANCE.flushWaitClear();
+        Logger.info("Final download stream flush");
+        try {
+            DownloadStream.INSTANCE.flushWaitClear();
+        } catch (Exception e) {
+            Logger.error("Error during final download stream flush", e);
+        }
 
         //Release hold on the world
         this.worldIn.releaseRef();

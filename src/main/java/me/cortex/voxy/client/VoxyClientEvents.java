@@ -2,11 +2,13 @@ package me.cortex.voxy.client;
 
 import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.config.VoxyNeoForgeConfig;
+import me.cortex.voxy.client.hud.VoxyLoadingHud;
 import me.cortex.voxy.client.compat.IrisCompatManager;
 import net.minecraft.client.renderer.FogRenderer;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.neoforge.client.event.RenderGuiEvent;
 import net.neoforged.neoforge.client.event.ViewportEvent;
 import net.neoforged.neoforge.event.GameShuttingDownEvent;
 
@@ -60,5 +62,13 @@ public class VoxyClientEvents {
     @SubscribeEvent
     public static void onGameShuttingDown(GameShuttingDownEvent event) {
         VoxyNeoForgeConfig.save();
+    }
+
+    @SubscribeEvent
+    public static void onRenderGuiPost(RenderGuiEvent.Post event) {
+        if (!VoxyConfig.CONFIG.isEnabled() || !VoxyNeoForgeConfig.isRenderingEnabled()) {
+            return;
+        }
+        VoxyLoadingHud.INSTANCE.render(event.getGuiGraphics(), event.getPartialTick());
     }
 }

@@ -44,6 +44,7 @@ public class ChunkBoundRenderer {
     private final LongOpenHashSet remQueue = new LongOpenHashSet();
 
     private final AbstractRenderPipeline pipeline;
+    private volatile boolean freed;
 
     public ChunkBoundRenderer(AbstractRenderPipeline pipeline) {
         this.chunk2idx.defaultReturnValue(-1);
@@ -64,18 +65,27 @@ public class ChunkBoundRenderer {
     }
 
     public void addSection(long pos) {
+        if (this.freed) {
+            return;
+        }
         if (!this.remQueue.remove(pos)) {
             this.addQueue.add(pos);
         }
     }
 
     public void removeSection(long pos) {
+        if (this.freed) {
+            return;
+        }
         if (!this.addQueue.remove(pos)) {
             this.remQueue.add(pos);
         }
     }
 
     public void render(Viewport<?> viewport) {
+        if (this.freed) {
+            return;
+        }
         if (!this.remQueue.isEmpty()) {
             boolean wasEmpty = this.chunk2idx.isEmpty();
             this.remQueue.forEach(this::_remPos);
@@ -202,6 +212,9 @@ public class ChunkBoundRenderer {
     }
 
     public void reset() {
+        if (this.freed) {
+            return;
+        }
         this.chunk2idx.clear();
     }
 
@@ -218,6 +231,10 @@ public class ChunkBoundRenderer {
     }
 
     public void free() {
+        if (this.freed) {
+            return;
+        }
+        this.freed = true;
         this.rasterShader.free();
         this.uniformBuffer.free();
         this.chunkPosBuffer.free();

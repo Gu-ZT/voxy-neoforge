@@ -2,6 +2,7 @@ package me.cortex.voxy.client.iris;
 
 import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.IGetVoxyRenderSystem;
+import me.cortex.voxy.common.Logger;
 import net.irisshaders.iris.gl.uniform.UniformHolder;
 import net.minecraft.client.Minecraft;
 import org.joml.Matrix4f;
@@ -12,6 +13,14 @@ import java.util.function.Supplier;
 import static net.irisshaders.iris.gl.uniform.UniformUpdateFrequency.PER_FRAME;
 
 public class VoxyUniforms {
+    // Some shader packs use vxRenderDistance directly in fog/depth equations.
+    // Clamp to a sane range to avoid extreme projection/fog instability.
+    private static final int VX_RENDER_DISTANCE_MIN_CHUNKS = 64;
+    private static final int VX_RENDER_DISTANCE_MAX_CHUNKS =
+            Integer.getInteger("voxy.vxRenderDistanceMaxChunks", 512);
+    private static int lastLoggedRawDistance = Integer.MIN_VALUE;
+    private static int lastLoggedClampedDistance = Integer.MIN_VALUE;
+
     private static IGetVoxyRenderSystem getRendererAccessor() {
         var levelRenderer = Minecraft.getInstance().levelRenderer;
         return levelRenderer instanceof IGetVoxyRenderSystem getVrs ? getVrs : null;
@@ -56,9 +65,25 @@ public class VoxyUniforms {
         return viewport == null ? -1 : viewport.frameId;
     }
 
+    private static int getRawVxRenderDistanceChunks() {
+        return VoxyConfig.CONFIG.getSectionRenderDistance() * 32; // in chunks
+    }
+
+    private static int getSanitizedVxRenderDistanceChunks() {
+        int raw = getRawVxRenderDistanceChunks();
+        int clamped = Math.max(VX_RENDER_DISTANCE_MIN_CHUNKS, Math.min(raw, VX_RENDER_DISTANCE_MAX_CHUNKS));
+        if (raw != clamped && (raw != lastLoggedRawDistance || clamped != lastLoggedClampedDistance)) {
+            lastLoggedRawDistance = raw;
+            lastLoggedClampedDistance = clamped;
+            Logger.warn("[VoxyUniforms] Clamped vxRenderDistance from " + raw + " to " + clamped
+                    + " chunks (range " + VX_RENDER_DISTANCE_MIN_CHUNKS + "-" + VX_RENDER_DISTANCE_MAX_CHUNKS + ")");
+        }
+        return clamped;
+    }
+
     public static void addUniforms(UniformHolder uniforms) {
         uniforms
-                .uniform1i(PER_FRAME, "vxRenderDistance", ()-> VoxyConfig.CONFIG.getSectionRenderDistance()*32)//In chunks
+                .uniform1i(PER_FRAME, "vxRenderDistance", VoxyUniforms::getSanitizedVxRenderDistanceChunks)
                 .uniformMatrix(PER_FRAME, "vxViewProj", VoxyUniforms::getViewProjection)
                 .uniformMatrix(PER_FRAME, "vxViewProjInv", new Inverted(VoxyUniforms::getViewProjection))
                 .uniformMatrix(PER_FRAME, "vxViewProjPrev", new PreviousMat(VoxyUniforms::getViewProjection))

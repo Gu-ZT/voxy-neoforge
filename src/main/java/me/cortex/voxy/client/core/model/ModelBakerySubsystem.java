@@ -47,6 +47,10 @@ public class ModelBakerySubsystem {
     }
 
     public void tick(long totalBudget) {
+        this.tick(totalBudget, -1);
+    }
+
+    public void tick(long totalBudget, int framebufferBindingHint) {
         long start = System.nanoTime();
         this.factory.tickAndProcessUploads();
         //Always do 1 iteration minimum
@@ -54,7 +58,7 @@ public class ModelBakerySubsystem {
         if (i != null) {
             int j = 0;
             if (i != null) {
-                int fbBinding = glGetInteger(GL_FRAMEBUFFER_BINDING);
+                int fbBinding = framebufferBindingHint >= 0 ? framebufferBindingHint : glGetInteger(GL_FRAMEBUFFER_BINDING);
 
                 do {
                     this.factory.addEntry(i);

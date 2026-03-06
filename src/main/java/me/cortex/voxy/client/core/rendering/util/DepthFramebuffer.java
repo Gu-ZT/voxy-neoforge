@@ -23,7 +23,7 @@ public class DepthFramebuffer {
     }
 
     public boolean resize(int width, int height) {
-        if (this.depthBuffer == null || this.depthBuffer.getWidth() != width || this.depthBuffer.getHeight() != height) {
+        if (this.depthBuffer == null || !this.depthBuffer.isAllocated() || this.depthBuffer.getWidth() != width || this.depthBuffer.getHeight() != height) {
             if (this.depthBuffer != null) {
                 this.depthBuffer.free();
             }
@@ -56,6 +56,7 @@ public class DepthFramebuffer {
         this.framebuffer.free();
         if (this.depthBuffer != null) {
             this.depthBuffer.free();
+            this.depthBuffer = null;
         }
     }
 

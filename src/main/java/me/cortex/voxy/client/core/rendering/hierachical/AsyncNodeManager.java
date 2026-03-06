@@ -619,13 +619,19 @@ public class AsyncNodeManager {
     private final LongOpenHashSet tlnRem = new LongOpenHashSet();
 
     private void addWork() {
-        if (!this.running) throw new IllegalStateException("Not running");
+        if (!this.running) {
+            return;
+        }
         if (this.workCounter.getAndIncrement() == 0) {
             LockSupport.unpark(this.thread);
         }
     }
 
     public void submitRequestBatch(MemoryBuffer batch) {//Only called from render thread
+        if (!this.running) {
+            batch.free();
+            return;
+        }
         this.requestBatchQueue.add(batch);
         this.addWork();
     }
@@ -649,12 +655,18 @@ public class AsyncNodeManager {
     }
 
     public void submitRemoveBatch(MemoryBuffer batch) {//Only called from render thread
+        if (!this.running) {
+            batch.free();
+            return;
+        }
         this.removeBatchQueue.add(batch);
         this.addWork();
     }
 
     public void addTopLevel(long section) {//Only called from render thread
-        if (!this.running) throw new IllegalStateException("Not running");
+        if (!this.running) {
+            return;
+        }
         long stamp = this.tlnLock.writeLock();
         int state = 0;
         if (!this.tlnRem.remove(section)) {
@@ -671,7 +683,9 @@ public class AsyncNodeManager {
     }
 
     public void removeTopLevel(long section) {//Only called from render thread
-        if (!this.running) throw new IllegalStateException("Not running");
+        if (!this.running) {
+            return;
+        }
         long stamp = this.tlnLock.writeLock();
         int state = 0;
         if (!this.tlnAdd.remove(section)) {
@@ -695,7 +709,7 @@ public class AsyncNodeManager {
 
     public void stop() {
         if (!this.running) {
-            throw new IllegalStateException();
+            return;
         }
         this.running = false;
         LockSupport.unpark(this.thread);

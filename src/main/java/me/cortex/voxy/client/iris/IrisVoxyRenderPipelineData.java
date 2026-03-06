@@ -760,15 +760,31 @@ public class IrisVoxyRenderPipelineData {
         }
 
 
+        final int[] bindCallCounter = new int[]{0};
         IntConsumer bindingFunction = base->{
+            bindCallCounter[0]++;
+            boolean logSnapshot = bindCallCounter[0] == 1 || (bindCallCounter[0] % 300) == 0;
+            StringBuilder snapshot = logSnapshot ? new StringBuilder() : null;
             for (int j = 0; j < samplers.length; j++) {
                 int unit = j+base;
                 var ts = samplers[j];
-                glBindTextureUnit(unit, ts.texture.getAsInt());
+                int textureId = ts.texture.getAsInt();
+                glBindTextureUnit(unit, textureId);
                 int sampler = ts.sampler.getAsInt();
                 if (sampler != -1) {
                     glBindSampler(unit, sampler);
                 }//TODO: might need to bind sampler 0
+                if (logSnapshot) {
+                    if (j != 0) snapshot.append(", ");
+                    snapshot.append(ts.name)
+                            .append("@").append(unit)
+                            .append("=tex").append(textureId)
+                            .append("/samp").append(sampler);
+                }
+            }
+            if (logSnapshot) {
+                Logger.info("[IrisVoxyRenderPipelineData] Sampler bind snapshot call="
+                        + bindCallCounter[0] + " base=" + base + " { " + snapshot + " }");
             }
         };
         return new ImageSet(builder.toString(), bindingFunction, Collections.unmodifiableMap(patchSamplerBindings));

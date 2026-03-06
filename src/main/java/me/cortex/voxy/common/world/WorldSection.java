@@ -6,8 +6,9 @@ import me.cortex.voxy.commonImpl.VoxyCommon;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.util.Arrays;
-import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 //Represents a loaded world section at a specific detail level
@@ -38,7 +39,8 @@ public final class WorldSection {
 
     //TODO: should make it dynamically adjust the size allowance based on memory pressure/WorldSection allocation rate (e.g. is it doing a world import)
     private static final int ARRAY_REUSE_CACHE_SIZE = 400;//500;//32*32*32*8*ARRAY_REUSE_CACHE_SIZE == number of bytes
-    private static final ArrayBlockingQueue<long[]> ARRAY_REUSE_CACHE = new ArrayBlockingQueue<>(ARRAY_REUSE_CACHE_SIZE);
+    private static final AtomicInteger ARRAY_REUSE_CACHE_COUNT = new AtomicInteger(0);
+    private static final ConcurrentLinkedDeque<long[]> ARRAY_REUSE_CACHE = new ConcurrentLinkedDeque<>();
     private static final boolean LOG_REUSE_STATS = VoxyCommon.isVerificationFlagOn("worldSectionReusePerfLog", true);
     private static final long REUSE_LOG_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(15);
     private static final AtomicLong NEXT_REUSE_LOG_NANOS = new AtomicLong(System.nanoTime() + REUSE_LOG_INTERVAL_NANOS);
@@ -77,11 +79,15 @@ public final class WorldSection {
         this.key = WorldEngine.getWorldSectionId(lvl, x, y, z);
         this.tracker = tracker;
 
-        this.data = ARRAY_REUSE_CACHE.poll();
+        this.data = ARRAY_REUSE_CACHE.pollFirst();
         if (this.data == null) {
             this.data = new long[32 * 32 * 32];
             CACHE_MISSES.incrementAndGet();
         } else {
+            int count = ARRAY_REUSE_CACHE_COUNT.decrementAndGet();
+            if (count < 0) {
+                ARRAY_REUSE_CACHE_COUNT.compareAndSet(count, 0);
+            }
             CACHE_HITS.incrementAndGet();
         }
         maybeLogReuseStats();
@@ -180,7 +186,19 @@ public final class WorldSection {
             throw new IllegalStateException();
         }
         CACHE_OFFERS.incrementAndGet();
-        if (!ARRAY_REUSE_CACHE.offer(this.data)) {
+        boolean accepted = false;
+        while (true) {
+            int count = ARRAY_REUSE_CACHE_COUNT.get();
+            if (count >= ARRAY_REUSE_CACHE_SIZE) {
+                break;
+            }
+            if (ARRAY_REUSE_CACHE_COUNT.compareAndSet(count, count + 1)) {
+                ARRAY_REUSE_CACHE.addFirst(this.data);
+                accepted = true;
+                break;
+            }
+        }
+        if (!accepted) {
             CACHE_REJECTS.incrementAndGet();
         }
         this.data = null;
@@ -208,7 +226,7 @@ public final class WorldSection {
         long hitPctTimes100 = allocs == 0 ? 0 : (hits * 10_000L) / allocs;
         me.cortex.voxy.common.Logger.info(
                 "VOXY_PERF world_section_cache",
-                "pool_size=" + ARRAY_REUSE_CACHE.size(),
+                "pool_size=" + ARRAY_REUSE_CACHE_COUNT.get(),
                 "allocations=" + allocs,
                 "hits=" + hits,
                 "misses=" + misses,

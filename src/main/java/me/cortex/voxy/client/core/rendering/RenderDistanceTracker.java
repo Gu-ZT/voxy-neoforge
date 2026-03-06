@@ -2,6 +2,7 @@ package me.cortex.voxy.client.core.rendering;
 
 import me.cortex.voxy.client.core.util.RingTracker;
 import me.cortex.voxy.common.world.WorldEngine;
+import net.minecraft.util.Mth;
 
 import java.util.function.LongConsumer;
 
@@ -32,7 +33,7 @@ public class RenderDistanceTracker {
         }
         this.renderDistance = renderDistance;
         this.tracker.unload();//Mark all as unload
-        this.tracker = new RingTracker(this.tracker, renderDistance, ((int)this.posX)>>9, ((int)this.posZ)>>9, true);//Steal from previous tracker
+        this.tracker = new RingTracker(this.tracker, renderDistance, Mth.floor(this.posX)>>9, Mth.floor(this.posZ)>>9, true);//Steal from previous tracker
     }
 
     public boolean setCenterAndProcess(double x, double z) {
@@ -41,7 +42,7 @@ public class RenderDistanceTracker {
         if (CHECK_DISTANCE_BLOCKS*CHECK_DISTANCE_BLOCKS<dx*dx+dz*dz) {
             this.posX = x;
             this.posZ = z;
-            this.tracker.moveCenter(((int)x)>>9, ((int)z)>>9);
+            this.tracker.moveCenter(Mth.floor(x)>>9, Mth.floor(z)>>9);
         }
         return this.tracker.process(this.processRate, this::add, this::rem)!=0;
     }
