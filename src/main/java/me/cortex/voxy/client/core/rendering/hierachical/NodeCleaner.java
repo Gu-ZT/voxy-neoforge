@@ -79,6 +79,8 @@ public class NodeCleaner {
             Integer.parseInt(System.getProperty("voxy.nodeCleanerInterval", "1"));
     private static final long CLEAN_REMAINING_GEOMETRY_THRESHOLD_BYTES =
             Long.parseLong(System.getProperty("voxy.nodeCleanerMinRemainingBytes", "100000000"));
+    private static final boolean DEFER_ON_UPLOAD_PRESSURE =
+            System.getProperty("voxy.nodeCleanerDeferOnUploadPressure", "true").equalsIgnoreCase("true");
 
     private int frameCounter = 0;
     private int deferCleanFrames = 0;
@@ -220,6 +222,9 @@ public class NodeCleaner {
     public void updateIds(IntOpenHashSet collection) {
         if (!collection.isEmpty()) {
             int count = collection.size();
+            if (DEFER_ON_UPLOAD_PRESSURE && UploadStream.INSTANCE.shouldDefer(count * 4L + 16L)) {
+                return;
+            }
             long addr = UploadStream.INSTANCE.rawUploadAddress(count * 4 + 16);//TODO ensure alignment, create method todo alignment things
             addr = (addr+15)&~15L;//Align to 16 bytes
 

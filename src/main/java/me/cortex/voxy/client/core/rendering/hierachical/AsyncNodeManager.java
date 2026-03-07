@@ -71,6 +71,10 @@ public class AsyncNodeManager {
     private final GeometryCache geometryCache = new GeometryCache(1L<<32);
 
     private final AtomicInteger workCounter = new AtomicInteger();
+    private static final boolean ENABLE_UPLOAD_BACKPRESSURE_DEFERRAL =
+            System.getProperty("voxy.asyncNodeUploadBackpressureDeferral", "true").equalsIgnoreCase("true");
+    private static final int UPLOAD_BACKPRESSURE_LOG_COOLDOWN_FRAMES =
+            Math.max(1, Integer.getInteger("voxy.asyncNodeUploadBackpressureLogCooldownFrames", 120));
 
     @SuppressWarnings("FieldMayBeFinal")
     private volatile SyncResults results = null, resultCache1 = new SyncResults(), resultCache2 = new SyncResults();
@@ -82,6 +86,7 @@ public class AsyncNodeManager {
     private final IntOpenHashSet cleanerIdResetClear = new IntOpenHashSet();//Tells the cleaner if it needs to clear the id to 0, or reset the id to the current frame
 
     private boolean needsWaitForSync = false;
+    private int uploadBackpressureLogCooldown;
 
     public AsyncNodeManager(int maxNodeCount, IGeometryData geometryData, RenderGenerationService renderService) {
         //Note the current implmentation of ISectionWatcher is threadsafe
@@ -496,6 +501,20 @@ public class AsyncNodeManager {
             return;
         }
 
+        if (ENABLE_UPLOAD_BACKPRESSURE_DEFERRAL) {
+            long estimatedUploadBytes = this.estimateRenderThreadUploadBytes(results);
+            if (UploadStream.INSTANCE.shouldDefer(estimatedUploadBytes)) {
+                if (this.uploadBackpressureLogCooldown-- <= 0) {
+                    this.uploadBackpressureLogCooldown = UPLOAD_BACKPRESSURE_LOG_COOLDOWN_FRAMES;
+                    Logger.info("[AsyncNodeManager] Deferring sync due to upload pressure; estBytes=" + estimatedUploadBytes);
+                }
+                if (!RESULT_HANDLE.compareAndSet(this, null, results)) {
+                    throw new IllegalStateException("Failed to requeue sync results under upload pressure");
+                }
+                return;
+            }
+        }
+
         //top level node add/remove
         if (!results.tlnDelta.isEmpty()) {
             var iter = results.tlnDelta.intIterator();
@@ -581,6 +600,24 @@ public class AsyncNodeManager {
                 throw new IllegalStateException("Could not insert result into cache");
             }
         }
+    }
+
+    private long estimateRenderThreadUploadBytes(SyncResults results) {
+        long bytes = 0L;
+        if (!results.geometryUpload.dataUploadPoints.isEmpty()) {
+            int copies = results.geometryUpload.dataUploadPoints.size();
+            int scratchSize = (int) results.geometryUpload.arena.getSize() * 8;
+            bytes += (long) scratchSize + (long) copies * 16L;
+        }
+        if (!results.scatterWriteLocationMap.isEmpty()) {
+            int count = results.scatterWriteLocationMap.size();
+            int chunks = (count + 3) / 4;
+            bytes += (long) chunks * 80L + 16L;
+        }
+        if (!results.cleanerOperations.isEmpty()) {
+            bytes += (long) results.cleanerOperations.size() * 4L + 16L;
+        }
+        return bytes;
     }
 
 

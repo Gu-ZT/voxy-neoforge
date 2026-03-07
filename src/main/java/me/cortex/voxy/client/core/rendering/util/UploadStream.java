@@ -32,6 +32,10 @@ public class UploadStream {
     private static final boolean USE_COHERENT = false;
     private static final int STREAM_FULL_ATTEMPTS =
             Math.max(1, Integer.getInteger("voxy.uploadStreamFullAttempts", 4));
+    private static final boolean ALLOW_FORCED_FINISH =
+            System.getProperty("voxy.uploadStreamAllowFinish", "false").equalsIgnoreCase("true");
+    private static final double DEFER_USAGE_THRESHOLD =
+            Math.max(0.0, Math.min(1.0, Double.parseDouble(System.getProperty("voxy.uploadStreamDeferUsageThreshold", "0.90"))));
     private static final boolean LOG_UPLOAD_PRESSURE =
             System.getProperty("voxy.logUploadPressure", "true").equalsIgnoreCase("true");
     private static final int LOG_UPLOAD_PRESSURE_EVERY =
@@ -99,12 +103,14 @@ public class UploadStream {
                     this.maybeLogUploadPressure();
                 }
 
-                int attempts = STREAM_FULL_ATTEMPTS;
-                while (--attempts != 0 && this.caddr == SIZE_LIMIT) {
-                    this.streamFullForcedFinishCalls++;
-                    glFinish();
-                    this.tick(false);
-                    this.caddr = this.allocationArena.alloc((int) size);
+                if (ALLOW_FORCED_FINISH) {
+                    int attempts = STREAM_FULL_ATTEMPTS;
+                    while (--attempts != 0 && this.caddr == SIZE_LIMIT) {
+                        this.streamFullForcedFinishCalls++;
+                        glFinish();
+                        this.tick(false);
+                        this.caddr = this.allocationArena.alloc((int) size);
+                    }
                 }
                 if (this.caddr == SIZE_LIMIT) {
                     this.streamFullHardFailures++;
@@ -183,6 +189,19 @@ public class UploadStream {
 
     public int getRawBufferId() {
         return this.uploadBuffer.id;
+    }
+
+    public boolean shouldDefer(long incomingBytes) {
+        if (incomingBytes <= 0) {
+            return false;
+        }
+        long limit = this.allocationArena.getLimit();
+        if (limit <= 0) {
+            return false;
+        }
+        long used = this.allocationArena.getSize();
+        long free = Math.max(0L, limit - used);
+        return free < incomingBytes || ((double) used / (double) limit) >= DEFER_USAGE_THRESHOLD;
     }
 
     private void maybeLogUploadPressure() {

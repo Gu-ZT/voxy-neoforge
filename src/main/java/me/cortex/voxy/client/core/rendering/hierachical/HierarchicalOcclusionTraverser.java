@@ -89,6 +89,20 @@ public class HierarchicalOcclusionTraverser {
             Float.parseFloat(System.getProperty("voxy.requestFrustumDirectionalMaxExtra", "64.0"));
     private static final int TRAVERSAL_INTERVAL_FRAMES =
             Math.max(1, Integer.parseInt(System.getProperty("voxy.traversalIntervalFrames", "1")));
+    private static final boolean ENABLE_ADAPTIVE_TRAVERSAL_INTERVAL =
+            System.getProperty("voxy.adaptiveTraversalInterval", "true").equalsIgnoreCase("true");
+    private static final int TRAVERSAL_MAX_INTERVAL_FRAMES =
+            Math.max(TRAVERSAL_INTERVAL_FRAMES, Integer.parseInt(System.getProperty("voxy.traversalIntervalMaxFrames", "3")));
+    private static final double TRAVERSAL_FORCE_MOTION_BLOCKS =
+            Double.parseDouble(System.getProperty("voxy.traversalForceMotionBlocks", "1.25"));
+    private static final double TRAVERSAL_FORCE_ROTATION_DEGREES =
+            Double.parseDouble(System.getProperty("voxy.traversalForceRotationDegrees", "1.0"));
+    private static final int TRAVERSAL_FORCE_BACKLOG_HIGH =
+            Math.max(1, Integer.parseInt(System.getProperty("voxy.traversalForceBacklogHigh", "1500")));
+    private static final int TRAVERSAL_BACKLOG_LOW =
+            Math.max(0, Integer.parseInt(System.getProperty("voxy.traversalBacklogLow", "300")));
+    private static final int HIZ_DISABLE_FROM_LOD =
+            Math.max(0, Integer.parseInt(System.getProperty("voxy.hizDisableFromLod", String.valueOf(MAX_ITERATIONS + 1))));
     private double lastCamX = Double.NaN, lastCamY = Double.NaN, lastCamZ = Double.NaN;
     private float lastNearPlaneX = Float.NaN, lastNearPlaneY = Float.NaN, lastNearPlaneZ = Float.NaN;
     private double lastRequestBudget = Double.NaN;
@@ -115,6 +129,7 @@ public class HierarchicalOcclusionTraverser {
             .define("MAX_ITERATIONS", MAX_ITERATIONS)
             .define("LOCAL_SIZE_BITS", LOCAL_WORK_SIZE_BITS)
             .define("MAX_REQUEST_QUEUE_SIZE", MAX_REQUEST_QUEUE_SIZE)
+            .define("HIZ_DISABLE_FROM_LOD", HIZ_DISABLE_FROM_LOD)
 
             .define("HIZ_BINDING", 0)
 
@@ -362,8 +377,9 @@ public class HierarchicalOcclusionTraverser {
     }
 
     public void doTraversal(Viewport<?> viewport) {
+        int traversalInterval = this.computeTraversalInterval(viewport);
         this.traversalFrameCounter++;
-        if (TRAVERSAL_INTERVAL_FRAMES > 1 && (this.traversalFrameCounter % TRAVERSAL_INTERVAL_FRAMES) != 0) {
+        if (traversalInterval > 1 && (this.traversalFrameCounter % traversalInterval) != 0) {
             return;
         }
         this.uploadUniform(viewport);
@@ -400,6 +416,48 @@ public class HierarchicalOcclusionTraverser {
         //Bind the hiz buffer
         glBindSampler(0, 0);
         glBindTextureUnit(0, 0);
+    }
+
+    private int computeTraversalInterval(Viewport<?> viewport) {
+        if (!ENABLE_ADAPTIVE_TRAVERSAL_INTERVAL) {
+            return TRAVERSAL_INTERVAL_FRAMES;
+        }
+        int backlog = this.meshGen.getTaskCount();
+        if (backlog >= TRAVERSAL_FORCE_BACKLOG_HIGH) {
+            return 1;
+        }
+        if (!Double.isNaN(this.lastCamX)) {
+            double dx = viewport.cameraX - this.lastCamX;
+            double dy = viewport.cameraY - this.lastCamY;
+            double dz = viewport.cameraZ - this.lastCamZ;
+            double motion = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            if (motion >= TRAVERSAL_FORCE_MOTION_BLOCKS) {
+                return 1;
+            }
+            if (!Float.isNaN(this.lastNearPlaneX)) {
+                float nearPlaneX = viewport.frustumPlanes[4].x;
+                float nearPlaneY = viewport.frustumPlanes[4].y;
+                float nearPlaneZ = viewport.frustumPlanes[4].z;
+                double dot = nearPlaneX * this.lastNearPlaneX
+                        + nearPlaneY * this.lastNearPlaneY
+                        + nearPlaneZ * this.lastNearPlaneZ;
+                dot = Math.max(-1.0, Math.min(1.0, dot));
+                double rotationDegrees = Math.toDegrees(Math.acos(dot));
+                if (rotationDegrees >= TRAVERSAL_FORCE_ROTATION_DEGREES) {
+                    return 1;
+                }
+            }
+        }
+
+        if (backlog <= TRAVERSAL_BACKLOG_LOW) {
+            return TRAVERSAL_MAX_INTERVAL_FRAMES;
+        }
+        int span = Math.max(1, TRAVERSAL_FORCE_BACKLOG_HIGH - TRAVERSAL_BACKLOG_LOW);
+        double normalized = 1.0 - ((double) (backlog - TRAVERSAL_BACKLOG_LOW) / span);
+        normalized = Math.max(0.0, Math.min(1.0, normalized));
+        int adaptive = TRAVERSAL_INTERVAL_FRAMES
+                + (int) Math.round(normalized * (TRAVERSAL_MAX_INTERVAL_FRAMES - TRAVERSAL_INTERVAL_FRAMES));
+        return Math.max(1, Math.min(TRAVERSAL_MAX_INTERVAL_FRAMES, adaptive));
     }
 
     private void traverseInternal() {

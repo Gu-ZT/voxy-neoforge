@@ -128,7 +128,8 @@ void traverse(in UnpackedNode node) {
     #ifdef DISABLE_TRAVERSAL_VISIBILITY_CULLING
     if (false) {
     #else
-    if (outsideFrustum() || isCulledByHiz()) {
+    bool hizCulled = node.lodLevel < HIZ_DISABLE_FROM_LOD && isCulledByHiz();
+    if (outsideFrustum() || hizCulled) {
     #endif
         //printf("culled");
     } else {
