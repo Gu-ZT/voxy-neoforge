@@ -1,5 +1,6 @@
 package me.cortex.voxy.client.mixin.minecraft;
 
+import me.cortex.voxy.client.config.RenderDistancePolicy;
 import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.compat.IrisCompatManager;
 import me.cortex.voxy.client.core.IGetVoxyRenderSystem;
@@ -33,7 +34,7 @@ public class MixinLevelRendererClouds {
         if (vrs == null || !VoxyConfig.CONFIG.isRenderingEnabled()) {
             return 3;
         }
-        int renderDistBlocks = VoxyConfig.CONFIG.getSectionRenderDistance() * 32;
+        int renderDistBlocks = RenderDistancePolicy.getConfiguredRenderDistanceChunks();
         return Math.max(3, (renderDistBlocks / 8) + 1);
     }
 

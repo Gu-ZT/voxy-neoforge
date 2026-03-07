@@ -8,6 +8,7 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import me.cortex.voxy.client.TimingStatistics;
 import me.cortex.voxy.client.VoxyClient;
 import me.cortex.voxy.client.compat.IrisCompatManager;
+import me.cortex.voxy.client.config.RenderDistancePolicy;
 import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.gl.Capabilities;
 import me.cortex.voxy.client.core.gl.GlBuffer;
@@ -290,12 +291,11 @@ public class VoxyRenderSystem {
         // Query GL state once here; results are cached so renderOpaque() can skip the GL round-trips.
         this.cachedFramebufferId = GL11.glGetInteger(GL_DRAW_FRAMEBUFFER_BINDING);
         if (QUERY_VIEWPORT_EACH_FRAME || IrisCompatManager.isShaderPackEnabled()) {
-            int[] dims = new int[4];
-            glGetIntegerv(GL_VIEWPORT, dims);
-            this.cachedViewportX = dims[0];
-            this.cachedViewportY = dims[1];
-            this.cachedViewportW = dims[2];
-            this.cachedViewportH = dims[3];
+            glGetIntegerv(GL_VIEWPORT, this.viewportDimsScratch);
+            this.cachedViewportX = this.viewportDimsScratch[0];
+            this.cachedViewportY = this.viewportDimsScratch[1];
+            this.cachedViewportW = this.viewportDimsScratch[2];
+            this.cachedViewportH = this.viewportDimsScratch[3];
         } else {
             var target = Minecraft.getInstance().getMainRenderTarget();
             this.cachedViewportX = 0;
@@ -461,6 +461,7 @@ public class VoxyRenderSystem {
     // Cached GL state from setupViewport() so renderOpaque() avoids synchronous GL queries.
     private int cachedFramebufferId = 0;
     private int cachedViewportX = 0, cachedViewportY = 0, cachedViewportW = 0, cachedViewportH = 0;
+    private final int[] viewportDimsScratch = new int[4];
 
     private boolean renderOpaqueFirstCall = true;
     private int renderOpaqueNullViewportWarmupFrames = 8;
@@ -470,82 +471,15 @@ public class VoxyRenderSystem {
     private long lastDynamicModelBudgetNs = MODEL_BUDGET_NS_BASE;
 
     public void renderOpaque(Viewport<?> viewport) {
-        if (this.shuttingDown) {
-            return;
-        }
-        if (IRIS_RECREATE_QUEUED.get()) {
-            return;
-        }
-        if (viewport == null) {
-            // Renderer/pipeline rebuild windows can produce a few frames without a valid viewport.
-            // Suppress diagnostics in this short warmup period to avoid false-positive noise.
-            if (this.renderOpaqueNullViewportWarmupFrames > 0) {
-                this.renderOpaqueNullViewportWarmupFrames--;
-                return;
-            }
-            if (renderOpaqueFirstCall) {
-                renderOpaqueFirstCall = false;
-                Logger.warn("[DIAG] renderOpaque called with null viewport - rendering suppressed");
-            }
-            return;
-        }
-        this.renderOpaqueNullViewportWarmupFrames = 0;
-        // Only skip the opaque pass when shadow is active AND we are using the IrisVoxyRenderPipeline,
-        // where we intentionally suppress the main pass during Iris shadow rendering.
-        // For NormalRenderPipeline, Embeddium's CUTOUT hook is the sole render entry point;
-        // blocking it here causes LODs to be completely invisible when Iris is loaded but
-        // the shader pack is not instrumented for Voxy (no voxy.json).
-        if (IrisCompatManager.isShadowActive() && !RENDER_LODS_IN_IRIS_SHADOW_PASS) {
-            if (this.pipeline instanceof IrisVoxyRenderPipeline) {
-                return; // Skip Voxy main pass while Iris shadow pass is active.
-            }
-            // NormalRenderPipeline has no dedicated shadow path — Embeddium CUTOUT hook is the
-            // only render entry point. Log once so we can confirm this code path is reached.
-            if (renderOpaqueFirstCall) {
-                me.cortex.voxy.common.Logger.info("[DIAG] renderOpaque: shadow active with NormalRenderPipeline — allowing LOD render (no dedicated shadow path)");
-            }
-        }
-
-        if (renderOpaqueFirstCall) {
-            renderOpaqueFirstCall = false;
-            Logger.info("[DIAG] renderOpaque first call: viewport=" + viewport.width + "x" + viewport.height
-                    + " GL_VIEWPORT=" + this.cachedViewportW + "x" + this.cachedViewportH
-                    + " boundFB=" + this.cachedFramebufferId
-                    + " shadowActive=" + IrisCompatManager.isShadowActive()
-                    + " pipeline=" + this.pipeline.getClass().getSimpleName());
-        }
-
-        // Periodic diagnostic: log section count + pipeline route every ~10s (600 frames)
-        renderOpaqueFrameCount++;
-        if (renderOpaqueFrameCount == 1 || renderOpaqueFrameCount % 600 == 0) {
-            int sc = (this.pipeline instanceof AbstractRenderPipeline arp)
-                    ? arp.getSectionCount() : -1;
-            if (sc != lastLoggedSectionCount || renderOpaqueFrameCount == 1) {
-                lastLoggedSectionCount = sc;
-                Logger.info("[VoxyDiag] frame=" + renderOpaqueFrameCount
-                        + " pipeline=" + this.pipeline.getClass().getSimpleName()
-                        + " sectionCount=" + sc
-                        + " meshQueue=" + this.renderGen.getTaskCount()
-                        + " meshRetries=" + RenderGenerationService.MESH_RETRY_COUNTER.get()
-                        + " modelQueue=" + this.modelService.getProcessingCount()
-                        + " modelBudgetNs=" + this.lastDynamicModelBudgetNs
-                        + " cam=(" + String.format("%.0f,%.0f,%.0f", viewport.cameraX, viewport.cameraY, viewport.cameraZ) + ")"
-                        + " viewport=" + viewport.width + "x" + viewport.height
-                        + " fb=" + this.cachedFramebufferId
-                        + " shadowActive=" + IrisCompatManager.isShadowActive());
-            }
-        }
+        if (this.shouldSkipOpaquePass(viewport)) return;
+        this.logOpaqueDiagnostics(viewport);
 
         // MC 1.21.1 NeoForge: Fog is handled by VoxyClientEvents.onRenderFog()
         // which listens to ViewportEvent.RenderFog and pushes fog to infinity
         // BEFORE terrain renders. This ensures no fog wall at vanilla render distance.
 
         TimingStatistics.resetSamplers();
-
-        long startTime = System.nanoTime();
-        TimingStatistics.all.start();
-        GPUTiming.INSTANCE.marker();//Start marker
-        TimingStatistics.main.start();
+        long startTime = this.beginOpaqueFrame();
 
         // We do NOT query existing SSBO bindings here — glGetIntegeri is a synchronous
         // GPU→CPU round-trip (expensive stall). Vanilla Minecraft and Embeddium never use
@@ -558,7 +492,6 @@ public class VoxyRenderSystem {
         // cachedFramebufferId / cachedViewport* are populated in setupViewport() which is called just before.
         int oldFB = this.cachedFramebufferId;
         int boundFB = oldFB;
-
         glViewport(0,0, viewport.width, viewport.height);
 
         //var target = DefaultTerrainRenderPasses.CUTOUT.getTarget();
@@ -572,25 +505,7 @@ public class VoxyRenderSystem {
         //this.autoBalanceSubDivSize();
 
         this.pipeline.preSetup(viewport);
-
-        TimingStatistics.E.start();
-        if ((!VoxyClient.disableEmbeddiumChunkRender()) && !IrisCompatManager.isShadowActive()) {
-            try {
-                this.chunkBoundRenderer.render(viewport);
-            } catch (IllegalStateException e) {
-                // During mid-frame teardown/recreate a stale chunk-bound pass can race with freed GL objects.
-                // Skip this pass for the current frame instead of hard-crashing the client.
-                if (e.getMessage() != null && e.getMessage().contains("should not be free")) {
-                    Logger.warn("[VoxyRecreate] ChunkBoundRenderer render skipped due to freed GL object");
-                    viewport.depthBoundingBuffer.clear(0);
-                } else {
-                    throw e;
-                }
-            }
-        } else {
-            viewport.depthBoundingBuffer.clear(0);
-        }
-        TimingStatistics.E.stop();
+        this.runChunkBoundPass(viewport);
 
 
         GPUTiming.INSTANCE.marker();
@@ -598,84 +513,13 @@ public class VoxyRenderSystem {
         this.pipeline.runPipeline(viewport, boundFB, this.cachedViewportW, this.cachedViewportH);
         GPUTiming.INSTANCE.marker();
 
-        TimingStatistics.main.stop();
-        TimingStatistics.postDynamic.start();
-
-        PrintfDebugUtil.tick();
-
-        {
-            UploadStream.INSTANCE.tick();
-
-            long trackerStart = System.nanoTime();
-            for (int pass = 0; pass < TRACKER_MAX_PASSES_PER_FRAME; pass++) {
-                if (System.nanoTime() - trackerStart >= TRACKER_BUDGET_NS) {
-                    break;
-                }
-                if (!this.renderDistanceTracker.setCenterAndProcess(viewport.cameraX, viewport.cameraZ)) {
-                    break;
-                }
-            }
-            TimingStatistics.H.start();
-            int modelQueueCount = this.modelService.getProcessingCount();
-            long elapsedBeforeModelNs = System.nanoTime() - startTime;
-            long slackNs = Math.max(0L, TARGET_FRAME_BUDGET_NS - elapsedBeforeModelNs);
-            long dynamicModelBudgetNs;
-            if (elapsedBeforeModelNs >= TARGET_FRAME_BUDGET_NS) {
-                dynamicModelBudgetNs = MODEL_BUDGET_NS_MIN;
-            } else {
-                long slackLimited = Math.min(slackNs / 2, MODEL_BUDGET_NS_BASE + (slackNs / 6));
-                dynamicModelBudgetNs = Math.max(MODEL_BUDGET_NS_MIN, Math.min(MODEL_BUDGET_NS_MAX, slackLimited));
-            }
-            // Bias toward throughput while there is a large backlog, but never exceed max.
-            if (modelQueueCount > 600) {
-                dynamicModelBudgetNs = Math.min(MODEL_BUDGET_NS_MAX, dynamicModelBudgetNs + 450_000L);
-            } else if (modelQueueCount > 200) {
-                dynamicModelBudgetNs = Math.min(MODEL_BUDGET_NS_MAX, dynamicModelBudgetNs + 250_000L);
-            }
-            // If mesh generation pressure is high, reserve more frame time for terrain generation.
-            if (this.renderGen.getTaskCount() > 2000) {
-                dynamicModelBudgetNs = Math.max(MODEL_BUDGET_NS_MIN, dynamicModelBudgetNs / 2);
-            }
-            this.lastDynamicModelBudgetNs = dynamicModelBudgetNs;
-
-            long modelStart = System.nanoTime();
-            for (int pass = 0; pass < MODEL_MAX_PASSES_PER_FRAME && !this.modelService.areQueuesEmpty(); pass++) {
-                if (System.nanoTime() - modelStart >= dynamicModelBudgetNs) {
-                    break;
-                }
-                this.modelService.tick(Math.min(900_000L, dynamicModelBudgetNs), oldFB);
-            }
-            TimingStatistics.H.stop();
-        }
+        this.runPostDynamicWork(viewport, startTime, oldFB);
         GPUTiming.INSTANCE.marker();
         TimingStatistics.postDynamic.stop();
 
         GPUTiming.INSTANCE.tick();
 
-        glBindFramebuffer(GlConst.GL_FRAMEBUFFER, oldFB);
-        glViewport(this.cachedViewportX, this.cachedViewportY, this.cachedViewportW, this.cachedViewportH);
-
-        {//Reset state manager stuffs
-            glUseProgram(0);
-            glEnable(GL_DEPTH_TEST);
-            glDisable(GL_STENCIL_TEST);
-
-            GlStateManager._glBindVertexArray(0);//Clear binding
-
-            GlStateManager._activeTexture(GlConst.GL_TEXTURE1);
-            for (int i = 0; i < 16; i++) {
-                GlStateManager._activeTexture(GlConst.GL_TEXTURE0+i);
-                GlStateManager._bindTexture(0);
-                glBindSampler(i, 0);
-            }
-            GlStateManager._activeTexture(GlConst.GL_TEXTURE0);
-
-            IrisCompatManager.clearSamplers();
-
-            for (int i = 0; i < 16; i++) {
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, 0);
-            }
-        }
+        this.restoreOpaqueGlState(oldFB);
 
         TimingStatistics.all.stop();
 
@@ -706,6 +550,181 @@ public class VoxyRenderSystem {
         this.postProcessing.renderPost(viewport, matrices.projection(), boundFB);
         TimingStatistics.F.stop();
          */
+    }
+
+    private boolean shouldSkipOpaquePass(Viewport<?> viewport) {
+        if (this.shuttingDown || IRIS_RECREATE_QUEUED.get()) return true;
+        if (viewport == null) {
+            // Renderer/pipeline rebuild windows can produce a few frames without a valid viewport.
+            // Suppress diagnostics in this short warmup period to avoid false-positive noise.
+            if (this.renderOpaqueNullViewportWarmupFrames > 0) {
+                this.renderOpaqueNullViewportWarmupFrames--;
+                return true;
+            }
+            if (renderOpaqueFirstCall) {
+                renderOpaqueFirstCall = false;
+                Logger.warn("[DIAG] renderOpaque called with null viewport - rendering suppressed");
+            }
+            return true;
+        }
+        this.renderOpaqueNullViewportWarmupFrames = 0;
+        // Only skip the opaque pass when shadow is active AND we are using the IrisVoxyRenderPipeline,
+        // where we intentionally suppress the main pass during Iris shadow rendering.
+        // For NormalRenderPipeline, Embeddium's CUTOUT hook is the sole render entry point;
+        // blocking it here causes LODs to be completely invisible when Iris is loaded but
+        // the shader pack is not instrumented for Voxy (no voxy.json).
+        if (IrisCompatManager.isShadowActive() && !RENDER_LODS_IN_IRIS_SHADOW_PASS) {
+            if (this.pipeline instanceof IrisVoxyRenderPipeline) {
+                return true; // Skip Voxy main pass while Iris shadow pass is active.
+            }
+            // NormalRenderPipeline has no dedicated shadow path — Embeddium CUTOUT hook is the
+            // only render entry point. Log once so we can confirm this code path is reached.
+            if (renderOpaqueFirstCall) {
+                me.cortex.voxy.common.Logger.info("[DIAG] renderOpaque: shadow active with NormalRenderPipeline — allowing LOD render (no dedicated shadow path)");
+            }
+        }
+        return false;
+    }
+
+    private void logOpaqueDiagnostics(Viewport<?> viewport) {
+        if (renderOpaqueFirstCall) {
+            renderOpaqueFirstCall = false;
+            Logger.info("[DIAG] renderOpaque first call: viewport=" + viewport.width + "x" + viewport.height
+                    + " GL_VIEWPORT=" + this.cachedViewportW + "x" + this.cachedViewportH
+                    + " boundFB=" + this.cachedFramebufferId
+                    + " shadowActive=" + IrisCompatManager.isShadowActive()
+                    + " pipeline=" + this.pipeline.getClass().getSimpleName());
+        }
+
+        // Periodic diagnostic: log section count + pipeline route every ~10s (600 frames)
+        renderOpaqueFrameCount++;
+        if (renderOpaqueFrameCount == 1 || renderOpaqueFrameCount % 600 == 0) {
+            int sc = (this.pipeline instanceof AbstractRenderPipeline arp)
+                    ? arp.getSectionCount() : -1;
+            if (sc != lastLoggedSectionCount || renderOpaqueFrameCount == 1) {
+                lastLoggedSectionCount = sc;
+                Logger.info("[VoxyDiag] frame=" + renderOpaqueFrameCount
+                        + " pipeline=" + this.pipeline.getClass().getSimpleName()
+                        + " sectionCount=" + sc
+                        + " meshQueue=" + this.renderGen.getTaskCount()
+                        + " meshRetries=" + RenderGenerationService.MESH_RETRY_COUNTER.get()
+                        + " modelQueue=" + this.modelService.getProcessingCount()
+                        + " modelBudgetNs=" + this.lastDynamicModelBudgetNs
+                        + " cam=(" + String.format("%.0f,%.0f,%.0f", viewport.cameraX, viewport.cameraY, viewport.cameraZ) + ")"
+                        + " viewport=" + viewport.width + "x" + viewport.height
+                        + " fb=" + this.cachedFramebufferId
+                        + " shadowActive=" + IrisCompatManager.isShadowActive());
+            }
+        }
+    }
+
+    private long beginOpaqueFrame() {
+        long startTime = System.nanoTime();
+        TimingStatistics.all.start();
+        GPUTiming.INSTANCE.marker();
+        TimingStatistics.main.start();
+        return startTime;
+    }
+
+    private void runChunkBoundPass(Viewport<?> viewport) {
+        TimingStatistics.E.start();
+        if ((!VoxyClient.disableEmbeddiumChunkRender()) && !IrisCompatManager.isShadowActive()) {
+            try {
+                this.chunkBoundRenderer.render(viewport);
+            } catch (IllegalStateException e) {
+                // During mid-frame teardown/recreate a stale chunk-bound pass can race with freed GL objects.
+                // Skip this pass for the current frame instead of hard-crashing the client.
+                if (e.getMessage() != null && e.getMessage().contains("should not be free")) {
+                    Logger.warn("[VoxyRecreate] ChunkBoundRenderer render skipped due to freed GL object");
+                    viewport.depthBoundingBuffer.clear(0);
+                } else {
+                    throw e;
+                }
+            }
+        } else {
+            viewport.depthBoundingBuffer.clear(0);
+        }
+        TimingStatistics.E.stop();
+    }
+
+    private void runPostDynamicWork(Viewport<?> viewport, long startTime, int oldFB) {
+        TimingStatistics.main.stop();
+        TimingStatistics.postDynamic.start();
+        PrintfDebugUtil.tick();
+
+        UploadStream.INSTANCE.tick();
+
+        long trackerStart = System.nanoTime();
+        for (int pass = 0; pass < TRACKER_MAX_PASSES_PER_FRAME; pass++) {
+            if (System.nanoTime() - trackerStart >= TRACKER_BUDGET_NS) {
+                break;
+            }
+            if (!this.renderDistanceTracker.setCenterAndProcess(viewport.cameraX, viewport.cameraZ)) {
+                break;
+            }
+        }
+        TimingStatistics.H.start();
+        int modelQueueCount = this.modelService.getProcessingCount();
+        long elapsedBeforeModelNs = System.nanoTime() - startTime;
+        long dynamicModelBudgetNs = this.computeDynamicModelBudgetNs(elapsedBeforeModelNs, modelQueueCount);
+        this.lastDynamicModelBudgetNs = dynamicModelBudgetNs;
+
+        long modelStart = System.nanoTime();
+        for (int pass = 0; pass < MODEL_MAX_PASSES_PER_FRAME && !this.modelService.areQueuesEmpty(); pass++) {
+            if (System.nanoTime() - modelStart >= dynamicModelBudgetNs) {
+                break;
+            }
+            this.modelService.tick(Math.min(900_000L, dynamicModelBudgetNs), oldFB);
+        }
+        TimingStatistics.H.stop();
+    }
+
+    private long computeDynamicModelBudgetNs(long elapsedBeforeModelNs, int modelQueueCount) {
+        long slackNs = Math.max(0L, TARGET_FRAME_BUDGET_NS - elapsedBeforeModelNs);
+        long dynamicModelBudgetNs;
+        if (elapsedBeforeModelNs >= TARGET_FRAME_BUDGET_NS) {
+            dynamicModelBudgetNs = MODEL_BUDGET_NS_MIN;
+        } else {
+            long slackLimited = Math.min(slackNs / 2, MODEL_BUDGET_NS_BASE + (slackNs / 6));
+            dynamicModelBudgetNs = Math.max(MODEL_BUDGET_NS_MIN, Math.min(MODEL_BUDGET_NS_MAX, slackLimited));
+        }
+        // Bias toward throughput while there is a large backlog, but never exceed max.
+        if (modelQueueCount > 600) {
+            dynamicModelBudgetNs = Math.min(MODEL_BUDGET_NS_MAX, dynamicModelBudgetNs + 450_000L);
+        } else if (modelQueueCount > 200) {
+            dynamicModelBudgetNs = Math.min(MODEL_BUDGET_NS_MAX, dynamicModelBudgetNs + 250_000L);
+        }
+        // If mesh generation pressure is high, reserve more frame time for terrain generation.
+        if (this.renderGen.getTaskCount() > 2000) {
+            dynamicModelBudgetNs = Math.max(MODEL_BUDGET_NS_MIN, dynamicModelBudgetNs / 2);
+        }
+        return dynamicModelBudgetNs;
+    }
+
+    private void restoreOpaqueGlState(int oldFB) {
+        glBindFramebuffer(GlConst.GL_FRAMEBUFFER, oldFB);
+        glViewport(this.cachedViewportX, this.cachedViewportY, this.cachedViewportW, this.cachedViewportH);
+
+        //Reset state manager stuffs
+        glUseProgram(0);
+        glEnable(GL_DEPTH_TEST);
+        glDisable(GL_STENCIL_TEST);
+
+        GlStateManager._glBindVertexArray(0);//Clear binding
+
+        GlStateManager._activeTexture(GlConst.GL_TEXTURE1);
+        for (int i = 0; i < 16; i++) {
+            GlStateManager._activeTexture(GlConst.GL_TEXTURE0+i);
+            GlStateManager._bindTexture(0);
+            glBindSampler(i, 0);
+        }
+        GlStateManager._activeTexture(GlConst.GL_TEXTURE0);
+
+        IrisCompatManager.clearSamplers();
+
+        for (int i = 0; i < 16; i++) {
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, 0);
+        }
     }
 
 
@@ -777,7 +796,7 @@ public class VoxyRenderSystem {
     }
 
     public void setRenderDistance(int renderDistance) {
-        this.renderDistanceTracker.setRenderDistance(Math.max(2, renderDistance + 1));
+        this.renderDistanceTracker.setRenderDistance(RenderDistancePolicy.getEffectiveSectionRenderDistance(renderDistance));
     }
 
     public Viewport<?> getViewport() {

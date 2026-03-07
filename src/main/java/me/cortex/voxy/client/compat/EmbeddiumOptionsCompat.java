@@ -76,6 +76,22 @@ public final class EmbeddiumOptionsCompat {
                         VoxyConfig::getSectionRenderDistance,
                         OptionImpact.HIGH,
                         OptionFlag.REQUIRES_RENDERER_UPDATE))
+                .add(booleanOption(
+                        "camera_distance_culling",
+                        "voxy.config.general.camera_distance_culling",
+                        "voxy.config.general.camera_distance_culling.tooltip",
+                        (cfg, value) -> cfg.setCameraDistanceCullingEnabled(value),
+                        VoxyConfig::isCameraDistanceCullingEnabled,
+                        OptionImpact.MEDIUM,
+                        OptionFlag.REQUIRES_RENDERER_RELOAD))
+                .add(booleanOption(
+                        "visibility_culling",
+                        "voxy.config.general.visibility_culling",
+                        "voxy.config.general.visibility_culling.tooltip",
+                        (cfg, value) -> cfg.setVisibilityCullingEnabled(value),
+                        VoxyConfig::isVisibilityCullingEnabled,
+                        OptionImpact.MEDIUM,
+                        OptionFlag.REQUIRES_RENDERER_RELOAD))
                 .add(intSliderOption(
                         "service_threads",
                         "voxy.config.general.serviceThreads",
@@ -191,6 +207,8 @@ public final class EmbeddiumOptionsCompat {
     private static final class VoxyConfigStorage implements OptionStorage<VoxyConfig> {
         private static boolean lastEnabled = VoxyConfig.CONFIG.isEnabled();
         private static boolean lastRenderingEnabled = VoxyNeoForgeConfig.isRenderingEnabled();
+        private static boolean lastCameraDistanceCulling = VoxyConfig.CONFIG.isCameraDistanceCullingEnabled();
+        private static boolean lastVisibilityCulling = VoxyConfig.CONFIG.isVisibilityCullingEnabled();
 
         @Override
         public VoxyConfig getData() {
@@ -203,7 +221,11 @@ public final class EmbeddiumOptionsCompat {
 
             boolean enabled = VoxyConfig.CONFIG.isEnabled();
             boolean renderingEnabled = VoxyNeoForgeConfig.isRenderingEnabled();
+            boolean cameraDistanceCulling = VoxyConfig.CONFIG.isCameraDistanceCullingEnabled();
+            boolean visibilityCulling = VoxyConfig.CONFIG.isVisibilityCullingEnabled();
             boolean rendererModeChanged = (enabled != lastEnabled) || (renderingEnabled != lastRenderingEnabled);
+            boolean distanceCullingModeChanged = cameraDistanceCulling != lastCameraDistanceCulling;
+            boolean visibilityCullingModeChanged = visibilityCulling != lastVisibilityCulling;
 
             if (enabled && VoxyCommon.isAvailable() && VoxyCommon.getInstance() == null && VoxyClientInstance.isInGame) {
                 VoxyCommon.createInstance();
@@ -221,17 +243,21 @@ public final class EmbeddiumOptionsCompat {
                 renderer.setRenderDistance(VoxyConfig.CONFIG.getSectionRenderDistance());
             }
 
-            if (rendererModeChanged) {
+            if (rendererModeChanged || distanceCullingModeChanged || visibilityCullingModeChanged) {
                 Logger.info("[VoxyConfig] Renderer mode changed: enabled " + lastEnabled + " -> " + enabled
-                        + ", rendering " + lastRenderingEnabled + " -> " + renderingEnabled);
+                        + ", rendering " + lastRenderingEnabled + " -> " + renderingEnabled
+                        + ", cameraDistanceCulling " + lastCameraDistanceCulling + " -> " + cameraDistanceCulling
+                        + ", visibilityCulling " + lastVisibilityCulling + " -> " + visibilityCulling);
                 if (IrisCompatManager.isShaderPackEnabled()) {
                     IrisCompatManager.reloadShaders();
                 }
-                VoxyRenderSystem.scheduleRendererRecreate("config toggle enabled/rendering changed");
+                VoxyRenderSystem.scheduleRendererRecreate("config toggle enabled/rendering/cameraDistanceCulling/visibilityCulling changed");
             }
 
             lastEnabled = enabled;
             lastRenderingEnabled = renderingEnabled;
+            lastCameraDistanceCulling = cameraDistanceCulling;
+            lastVisibilityCulling = visibilityCulling;
         }
     }
 }

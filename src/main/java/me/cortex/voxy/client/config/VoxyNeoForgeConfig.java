@@ -24,6 +24,8 @@ public class VoxyNeoForgeConfig {
     private static final boolean DEFAULT_ENABLE_RENDERING = true;
     private static final boolean DEFAULT_INGEST_ENABLED = true;
     private static final int DEFAULT_SECTION_RENDER_DISTANCE = 16;
+    private static final boolean DEFAULT_CAMERA_DISTANCE_CULLING = true;
+    private static final boolean DEFAULT_VISIBILITY_CULLING = true;
     private static final int DEFAULT_SERVICE_THREADS = Math.max((int) (CpuLayout.getCoreCount() / 1.5), 1);
     private static final double DEFAULT_SUB_DIVISION_SIZE = 64.0;
     private static final boolean DEFAULT_USE_ENVIRONMENTAL_FOG = true;
@@ -52,6 +54,14 @@ public class VoxyNeoForgeConfig {
             .comment("LOD section render distance (multiplied by 32 for actual chunk distance)",
                      "Example: 16 = 512 chunks render distance")
             .defineInRange("sectionRenderDistance", DEFAULT_SECTION_RENDER_DISTANCE, 2, 64);
+    static final ModConfigSpec.BooleanValue CAMERA_DISTANCE_CULLING = BUILDER
+            .comment("Cull/unload distant top-level LOD nodes based on camera position",
+                     "Disable for testing traversal/camera-move CPU behavior (uses more memory)")
+            .define("cameraDistanceCulling", DEFAULT_CAMERA_DISTANCE_CULLING);
+    static final ModConfigSpec.BooleanValue VISIBILITY_CULLING = BUILDER
+            .comment("Enable frustum/HiZ/section visibility culling",
+                     "Disabling this can reduce CPU orchestration but significantly increases GPU load")
+            .define("visibilityCulling", DEFAULT_VISIBILITY_CULLING);
 
     static final ModConfigSpec.IntValue SERVICE_THREADS = BUILDER
             .comment("Number of background threads for LOD processing",
@@ -187,6 +197,24 @@ public class VoxyNeoForgeConfig {
         }
     }
 
+    public static boolean isCameraDistanceCullingEnabled() {
+        if (!configLoaded) return DEFAULT_CAMERA_DISTANCE_CULLING;
+        try {
+            return CAMERA_DISTANCE_CULLING.get();
+        } catch (IllegalStateException ignored) {
+            return DEFAULT_CAMERA_DISTANCE_CULLING;
+        }
+    }
+
+    public static boolean isVisibilityCullingEnabled() {
+        if (!configLoaded) return DEFAULT_VISIBILITY_CULLING;
+        try {
+            return VISIBILITY_CULLING.get();
+        } catch (IllegalStateException ignored) {
+            return DEFAULT_VISIBILITY_CULLING;
+        }
+    }
+
     public static int getServiceThreads() {
         if (!configLoaded) return DEFAULT_SERVICE_THREADS;
         try {
@@ -266,6 +294,14 @@ public class VoxyNeoForgeConfig {
 
     public static void setSectionRenderDistance(int value) {
         SECTION_RENDER_DISTANCE.set(value);
+    }
+
+    public static void setCameraDistanceCullingEnabled(boolean value) {
+        CAMERA_DISTANCE_CULLING.set(value);
+    }
+
+    public static void setVisibilityCullingEnabled(boolean value) {
+        VISIBILITY_CULLING.set(value);
     }
 
     public static void setServiceThreads(int value) {

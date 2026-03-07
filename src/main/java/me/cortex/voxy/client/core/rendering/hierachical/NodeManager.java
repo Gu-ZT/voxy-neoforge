@@ -148,7 +148,6 @@ public class NodeManager {
             throw new IllegalStateException("BAD POS !! YOU DID SOMETHING VERY BAD");
         }
         if (this.activeSectionMap.containsKey(pos)) {
-            Logger.error("Tried inserting top level pos " + WorldEngine.pprintPos(pos) + " but it was in active map, discarding!");
             return;
         }
 

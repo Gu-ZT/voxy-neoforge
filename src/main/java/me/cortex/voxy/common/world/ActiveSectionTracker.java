@@ -10,6 +10,7 @@ import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.StampedLock;
 
 public class ActiveSectionTracker {
@@ -179,10 +180,16 @@ public class ActiveSectionTracker {
         } else {
             //TODO: mark the time the loading started in nanos, then here if it has been a while, spin lock, else jump back to the executing service and do work
             VarHandle.fullFence();
+            int spinCount = 0;
             while ((section = holder.obj) == null) {
                 VarHandle.fullFence();
-                Thread.onSpinWait();
-                Thread.yield();
+                if (spinCount < 64) {
+                    Thread.onSpinWait();
+                } else {
+                    // Back off to avoid burning CPU while waiting on IO-heavy section loads.
+                    LockSupport.parkNanos(50_000L);
+                }
+                spinCount++;
             }
 
             //Try to acquire a pre lock

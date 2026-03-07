@@ -36,6 +36,14 @@ public class VoxyConfig {
         return VoxyNeoForgeConfig.getSectionRenderDistance();
     }
 
+    public boolean isCameraDistanceCullingEnabled() {
+        return VoxyNeoForgeConfig.isCameraDistanceCullingEnabled();
+    }
+
+    public boolean isVisibilityCullingEnabled() {
+        return VoxyNeoForgeConfig.isVisibilityCullingEnabled();
+    }
+
     public int getServiceThreads() {
         return VoxyNeoForgeConfig.getServiceThreads();
     }
@@ -76,6 +84,14 @@ public class VoxyConfig {
 
     public void setSectionRenderDistance(int value) {
         VoxyNeoForgeConfig.setSectionRenderDistance(value);
+    }
+
+    public void setCameraDistanceCullingEnabled(boolean value) {
+        VoxyNeoForgeConfig.setCameraDistanceCullingEnabled(value);
+    }
+
+    public void setVisibilityCullingEnabled(boolean value) {
+        VoxyNeoForgeConfig.setVisibilityCullingEnabled(value);
     }
 
     public void setServiceThreads(int value) {

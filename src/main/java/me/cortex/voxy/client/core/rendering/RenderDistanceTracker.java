@@ -1,5 +1,6 @@
 package me.cortex.voxy.client.core.rendering;
 
+import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.util.RingTracker;
 import me.cortex.voxy.common.world.WorldEngine;
 import net.minecraft.util.Mth;
@@ -54,6 +55,10 @@ public class RenderDistanceTracker {
     }
 
     private void rem(int x, int z) {
+        // Optional testing mode: keep previously loaded top-level nodes instead of unloading by camera distance.
+        if (!VoxyConfig.CONFIG.isCameraDistanceCullingEnabled()) {
+            return;
+        }
         for (int y = this.minSec; y <= this.maxSec; y++) {
             this.removeTopLevelNode.accept(WorldEngine.getWorldSectionId(4, x, y, z));
         }

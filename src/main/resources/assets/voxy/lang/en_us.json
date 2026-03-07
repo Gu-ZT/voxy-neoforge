@@ -25,6 +25,12 @@
   "voxy.config.general.renderDistance": "Render distance",
   "voxy.config.general.renderDistance.tooltip": "Render distance of voxy in chunks",
 
+  "voxy.config.general.camera_distance_culling": "Camera-driven culling",
+  "voxy.config.general.camera_distance_culling.tooltip": "Controls distance-based LOD residency/unload around the camera. Disable for low-CPU traversal testing (memory usage grows).",
+
+  "voxy.config.general.visibility_culling": "Visibility culling",
+  "voxy.config.general.visibility_culling.tooltip": "Controls frustum/HiZ/section visibility culling. Keep ON for GPU efficiency; disable only for CPU-overhead experiments.",
+
   "voxy.config.general.environmental_fog": "Enable environmental fog",
   "voxy.config.general.environmental_fog.tooltip": "Enables or disables voxy rendering environmental fog",
 

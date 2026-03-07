@@ -1,6 +1,6 @@
 package me.cortex.voxy.client.iris;
 
-import me.cortex.voxy.client.config.VoxyConfig;
+import me.cortex.voxy.client.config.RenderDistancePolicy;
 import me.cortex.voxy.client.core.IGetVoxyRenderSystem;
 import me.cortex.voxy.common.Logger;
 import net.irisshaders.iris.gl.uniform.UniformHolder;
@@ -66,7 +66,7 @@ public class VoxyUniforms {
     }
 
     private static int getRawVxRenderDistanceChunks() {
-        return VoxyConfig.CONFIG.getSectionRenderDistance() * 32; // in chunks
+        return RenderDistancePolicy.getConfiguredRenderDistanceChunks();
     }
 
     private static int getSanitizedVxRenderDistanceChunks() {
